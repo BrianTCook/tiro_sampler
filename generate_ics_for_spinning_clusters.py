@@ -13,6 +13,36 @@ open, so the model is unbound and its particles show super-escape Jacobi
 energies at t = 0 through no fault of the escape diagnostic downstream. Pass
 --allow_supercritical to sample one deliberately.
 
+The host enters through nu
+--------------------------
+Two numbers reach TIRO from the host potential at the cluster's galactocentric
+radius: the tidal strength epsilon = Omega^2/(4 pi G rho_0), and the galactic
+potential coefficient nu, which weights the radial term of the perturbation
+
+    a_pert = (9 eps / 2) [ -zeta (x^2 + y^2) + z^2 - nu x^2 ].
+
+nu is not a free knob and it is not 3.  ``host_potential`` defines it as
+1 - R Phi''/Phi', and for a spherical host that is identically
+
+    nu = 3 - dlnM/dlnR = 3 (1 - rho(R)/rho_bar(R)),
+
+the generalised Jacobi denominator: the tidal radius is
+r_J^3 = G m/(Omega^2 - Phi'') = R^3 m/(nu M(<R)), so the textbook factor of 3 in
+r_J = R (m/3M)^(1/3) is really nu, and equals 3 only where the host has no mass
+outside the orbit.  (The two expressions agree to 1e-14 -- see
+``jacobi_escape.nu_tidal``, which computes nu from the mass profile while
+``host_potential`` gets it from gala's Hessian.)
+
+For the spherical Milky Way host nu runs 1.6-1.9 over 3-20 kpc, so every model
+built here is ~20% more tidally extended than a Kepler point mass of the same
+enclosed mass would make it, and correspondingly harder to spin apart: zeta_crit
+scales with how much room the Jacobi surface has.  The limit nu -> 0 (a
+homogeneous core, dlnM/dlnR -> 3) is the interesting one -- the radial tidal
+field stops shearing, r_J diverges, and there is no L1 for the criticality
+search to find.  A satellite there is tidally protected rather than stripped,
+so it is refused up front rather than left to fail inside brentq; see
+:func:`assert_tidal_field_shears`.
+
 This supersedes generate_ics_at_fixed_zeta.py, a clone of this script that
 carried only the --zeta half.
 """
@@ -49,9 +79,10 @@ _DEFAULT_M_GC = 2.0e5
 _DEFAULT_RHO_0 = 1e3
 _DEFAULT_R_GAL = 10.0
 _DEFAULT_PSI = 3
-# Host galactic potential: "kepler" (point mass, nu=3) or "mw2022_sph" (the
-# spherical components of MilkyWayPotential2022 at r_gal). The host sets both
-# nu and Omega^2 (hence epsilon).
+# Host galactic potential: "kepler" (point mass, so nu = 3 - dlnM/dlnR = 3
+# exactly) or "mw2022_sph" (the spherical components of MilkyWayPotential2022 at
+# r_gal, where nu is 1.6-1.9). The host sets both nu and Omega^2 (hence
+# epsilon).
 _DEFAULT_HOST = "mw2022_sph"
 # Degree of asynchronism, zeta = omega^2/Omega^2 - 1, when --zeta_max is not
 # used. -1 is the non-rotating case (omega = 0), 0 is synchronous rotation.
@@ -106,6 +137,145 @@ def spherical_to_cartesian(r, theta, phi):
     y = r * np.sin(theta) * np.sin(phi)
     z = r * np.cos(theta)
     return np.array([x, y, z])
+
+
+def assert_tidal_field_shears(nu, host_name, r_gal_kpc):
+    """Refuse a host whose radial tidal field does not shear at ``r_gal_kpc``.
+
+    nu = 3 - dlnM/dlnR is the generalised Jacobi denominator (see the module
+    docstring): the tidal radius goes as nu^(-1/3), so nu -> 0 -- a homogeneous
+    core, local density equal to the mean interior density -- pushes L1 to
+    infinity, and nu < 0 turns the radial tidal term compressive.  In neither
+    case is there a saddle for ``critical_spin.l1_radius`` to find: its scan
+    expands to 1e8 King radii and then raises.
+
+    This is a real regime, not a pathology to be coded around -- a satellite
+    inside a constant-density core is tidally protected, which is the standard
+    reason cored dwarfs survive pericentre passages that would shred them in a
+    cuspy host.  It is simply outside what a TIRO model describes, so it is
+    reported here with the reason rather than 1e8 King radii later as a failed
+    scan.
+
+    Neither host shipped in ``host_potential`` reaches it: Kepler is nu = 3 by
+    construction and the spherical Milky Way stays in 1.6-2.4 from 0.2 to 100
+    kpc.  The check exists for hosts added later.  The condition that actually
+    binds in practice is the asynchronous one -- see
+    :func:`assert_l1_saddle_exists`.
+    """
+    if not np.isfinite(nu):
+        raise ValueError(
+            f"host '{host_name}' gives a non-finite nu at r_gal = "
+            f"{r_gal_kpc} kpc.")
+    if nu <= 0.0:
+        raise ValueError(
+            f"host '{host_name}' has nu = {nu:.4f} <= 0 at r_gal = "
+            f"{r_gal_kpc} kpc (dlnM/dlnR = {3.0 - nu:.4f} >= 3, i.e. the local "
+            f"density is at or above the mean interior density).  The radial "
+            f"tidal field does not shear there, the Jacobi radius r_J ~ "
+            f"nu^(-1/3) diverges, and there is no L1 saddle -- the cluster is "
+            f"tidally protected rather than truncated, which is a physical "
+            f"regime but not one a TIRO model represents.  Move r_gal outside "
+            f"the core.")
+
+
+def assert_l1_saddle_exists(nu, zeta):
+    """Require nu + zeta > 0, the condition for the model to have an L1 at all.
+
+    TIRO's perturbation carries the tidal and asynchronous-centrifugal terms
+    together,
+
+        a_pert = (9 eps/2) [ -zeta (x^2 + y^2) + z^2 - nu x^2 ],
+
+    so along the host-cluster axis the two combine into a single coefficient,
+    -(nu + zeta) x^2.  Everything the notes on a general spherical host say
+    about nu therefore applies to **nu + zeta** for a model that is not
+    synchronously rotating:
+
+      * zeta = 0 (synchronous) recovers the classical problem, and the model's
+        L1 is the generalised Jacobi radius r_J = R (M_GC/(nu M(<R)))^(1/3).
+        For a Kepler host at 8 kpc, where that reduces to R (M_GC/3M)^(1/3),
+        the integrated model gives 65.93842 pc against 65.93802 pc predicted --
+        6 parts in a million.
+      * r_L1 scales as (nu + zeta)^(-1/3) off that point.  For the psi = 3,
+        2e5 Msun, rho_0 = 1e3, 5 kpc reference model the integrated r_L1 and
+        the prediction agree to better than 0.03% over the whole usable range,
+        zeta = -1 (116.72 pc) through zeta = 0 (85.16 pc) to 0.99 zeta_crit =
+        80.2 (23.104 pc against 23.111 pc predicted).
+      * nu + zeta <= 0 has no saddle, exactly as nu <= 0 has none in the
+        synchronous problem.  Checked: at psi = 3, eps = 1.58e-5, zeta = -1,
+        nu = 1.05 puts L1 at 80.6 r_0 while nu = 0.99 has none.
+
+    A slowly spinning cluster (zeta -> -1) is being held together against a
+    *weaker* effective tide than a synchronous one, because in the co-rotating
+    frame it lacks the centrifugal support its own spin would supply, so its L1
+    recedes.  Where nu < 1 -- a host steeper than isothermal -- that pushes the
+    saddle away entirely and a non-rotating model has no tidal boundary.  Both
+    ``host_potential`` hosts have nu > 1.6, so this never fires for them.
+    """
+    nu_eff = nu + zeta
+    if nu_eff <= 0.0:
+        raise ValueError(
+            f"nu + zeta = {nu_eff:+.4f} <= 0 (nu = {nu:.4f}, zeta = "
+            f"{zeta:g}): the coefficient of x^2 in the TIRO perturbation is "
+            f"-(nu + zeta), so the effective potential has no maximum along "
+            f"the host-cluster axis and the model has no L1 saddle.  The "
+            f"cluster spins too slowly for this host's tidal field to truncate "
+            f"it: raise zeta above {-nu:.4f}, or move to a smaller r_gal where "
+            f"nu is larger.")
+    return nu_eff
+
+
+def host_tidal_diagnostics(host, r_gal_kpc, m_gc_msun):
+    """Jacobi-radius diagnostics for ``host`` at ``r_gal_kpc``, as a dict.
+
+    Everything the notes on a general spherical host say is worth carrying
+    alongside nu, computed two independent ways so a disagreement is visible:
+
+    ``nu``            3 - dlnM/dlnR, from ``host.nu`` (gala's Hessian).
+    ``dlnm_dlnr``     the logarithmic mass slope, 3 - nu.
+    ``r_jacobi_pc``   r_J = (G M_GC/(nu Omega^2))^(1/3), the generalised tidal
+                      radius -- what the model's own L1 comes out at when the
+                      cluster rotates synchronously (zeta = 0).
+    ``r_jacobi_kepler_pc``
+                      the same with nu replaced by 3 -- what assuming a point-
+                      mass host would have given, for the size of the error.
+    ``lambda_1_over_nu_omega2``
+                      largest eigenvalue of the co-rotating tidal tensor divided
+                      by nu Omega^2.  Exactly 1 for a spherical host; a
+                      departure means the host is flattened and the single
+                      number nu no longer describes its tidal field, which is
+                      the assumption TIRO's a_pert is built on.
+
+    :func:`jacobi_radius_for_zeta` applies the asynchronous correction.
+    """
+    nu = float(host.nu(r_gal_kpc))
+    omega2 = host.omega2(r_gal_kpc)
+    m_gc = m_gc_msun * u.Msun
+
+    r_j = ((G_apy * m_gc / (nu * omega2))**(1.0 / 3.0)).to_value(u.pc)
+    r_j_kepler = ((G_apy * m_gc / (3.0 * omega2))**(1.0 / 3.0)).to_value(u.pc)
+    lam1 = host.tidal_eigenvalue(r_gal_kpc)
+    lam1_ratio = float((lam1 / (nu * omega2)).decompose().value)
+
+    return {
+        "nu": nu,
+        "dlnm_dlnr": 3.0 - nu,
+        "r_jacobi_pc": float(r_j),
+        "r_jacobi_kepler_pc": float(r_j_kepler),
+        "lambda_1_over_nu_omega2": lam1_ratio,
+    }
+
+
+def jacobi_radius_for_zeta(r_jacobi_pc, nu, zeta):
+    """r_J with the asynchronous centrifugal term folded in: nu -> nu + zeta.
+
+    ``r_jacobi_pc * (nu / (nu + zeta))^(1/3)`` -- the leading-order prediction
+    for the L1 radius of a TIRO model spinning at zeta, and the number the
+    integrated model's own r_L1 is reported against.  See
+    :func:`assert_l1_saddle_exists` for the derivation and the accuracy.
+    """
+    return float(r_jacobi_pc) * (nu / assert_l1_saddle_exists(nu, zeta))**(
+        1.0 / 3.0)
 
 
 def assert_jacobi_surface_closed(model, zeta):
@@ -172,9 +342,24 @@ class TiroInitialConditionSampler:
         self.m_gc_msun = m_gc_msun
         self.rho_0_msun_pc3 = rho_0_msun_pc3
         # Host potential sets both nu and Omega^2 (hence epsilon) at r_gal.
+        # nu = 3 - dlnM/dlnR is the generalised Jacobi denominator, so it has to
+        # be positive for the model to have a tidal boundary at all.
         self.host = make_host(host)
         self.host_name = self.host.name
         self.nu = self.host.nu(self.r_gal_kpc)
+        assert_tidal_field_shears(self.nu, self.host_name, self.r_gal_kpc)
+        self.tidal = host_tidal_diagnostics(self.host, self.r_gal_kpc,
+                                            m_gc_msun)
+        # A spherical host has lambda_1 = nu Omega^2 identically; anything else
+        # means one number no longer describes the tidal field and TIRO's
+        # a_pert -- built from nu alone -- is not the right perturbation.
+        if abs(self.tidal["lambda_1_over_nu_omega2"] - 1.0) > 1e-6:
+            warnings.warn(
+                f"host '{self.host_name}' has lambda_1 / (nu Omega^2) = "
+                f"{self.tidal['lambda_1_over_nu_omega2']:.6f} at r_gal = "
+                f"{self.r_gal_kpc} kpc, not 1: the tidal tensor is not that of "
+                "a spherical host, so nu does not capture it and the TIRO "
+                "perturbation is being applied outside its assumptions.")
         self.verbose = verbose
 
         self.masses = np.ones(self.n) / self.n
@@ -197,6 +382,14 @@ class TiroInitialConditionSampler:
         else:
             self.zeta = self.zeta_requested
             self._reject_supercritical_zeta(eps)
+        # The saddle has to exist before anything below is meaningful: along the
+        # host-cluster axis the tidal and asynchronous-centrifugal terms combine
+        # into -(nu + zeta) x^2, so nu + zeta > 0 is the L1 existence condition.
+        self.nu_eff = assert_l1_saddle_exists(self.nu, self.zeta)
+        self.tidal["nu_eff"] = self.nu_eff
+        self.tidal["r_jacobi_zeta_pc"] = jacobi_radius_for_zeta(
+            self.tidal["r_jacobi_pc"], self.nu, self.zeta)
+
         # chi = omega^2/(4 pi G rho_0) = epsilon*(1+zeta), from Arditi & Varri
         # (2025) equations (15), (16) and (23) (chi - eps = zeta*eps).
         self.chi = max(eps * (1.0 + self.zeta), 0.0)
@@ -231,12 +424,21 @@ class TiroInitialConditionSampler:
                 mode = f"asynchronous (zeta = {self.zeta:g})"
             print(f"      Mode: {mode}")
             print(f"      host potential               = {self.host_name}")
-            print(f"      nu (from host at r_gal)      = {self.nu:.4f}")
+            print(f"      dlnM/dlnR at r_gal           = "
+                  f"{self.tidal['dlnm_dlnr']:.4f}")
+            print(f"      nu = 3 - dlnM/dlnR           = {self.nu:.4f}")
+            print(f"      r_J = (G M_GC/(nu Omega^2))^(1/3) = "
+                  f"{self.tidal['r_jacobi_pc']:.2f} pc "
+                  f"({self.tidal['r_jacobi_pc'] / self.tidal['r_jacobi_kepler_pc']:.3f}"
+                  f"x the Keplerian nu = 3 value)")
             print(f"      epsilon                      = {eps:.3e}")
             if self.zeta_crit is not None:
                 print(f"      zeta_crit                    = "
                       f"{self.zeta_crit:.4f}")
             print(f"      zeta                         = {self.zeta:.4f}")
+            print(f"      nu + zeta (L1 coefficient)   = {self.nu_eff:.4f}")
+            print(f"      r_J(nu + zeta)               = "
+                  f"{self.tidal['r_jacobi_zeta_pc']:.2f} pc")
             print(f"      omega = sqrt(4*pi*eps*(1+zeta)) = {self.omega:.4f}")
 
         if self.verbose:
@@ -400,6 +602,20 @@ class TiroInitialConditionSampler:
         m_gc_phys = (dens_norm * self.total_mass_dimless * self.r_king**3).to(
             u.Msun)
 
+        # TIRO's own L1 saddle -- where this model's external gradient actually
+        # vanishes, so it carries the cluster's non-spherical shape as well as
+        # the rotation.  It is reported against r_J(nu + zeta) rather than
+        # against r_J: the bare Jacobi radius is the synchronous (zeta = 0)
+        # answer, and a model at zeta = -1 legitimately sits ~1.37x further out
+        # for nu = 1.635.  Comparing to the uncorrected r_J would show a 37%
+        # "discrepancy" that is really just the asynchronous centrifugal term.
+        # Against the corrected prediction the agreement is better than 0.03%
+        # from zeta = -1 all the way to 0.99 zeta_crit, so a ratio that is not
+        # ~1.000 means something is wrong with nu, epsilon or the model, not
+        # with the leading-order expansion.
+        r_l1_pc = (None if self.r_tidal_dimless is None else
+                   float(self.r_tidal_dimless * self.r_king.value))
+
         self.phys.update({
             "r_king_pc":
             self.r_king.value,
@@ -424,7 +640,27 @@ class TiroInitialConditionSampler:
             m_gc_phys.value,
             "omega":
             self.omega,
+            # Generalised Jacobi radius r_J = (G M_GC/(nu Omega^2))^(1/3) and
+            # the nu = 3 point-mass-host value it replaces; see
+            # host_tidal_diagnostics.
+            "r_jacobi_pc":
+            self.tidal["r_jacobi_pc"],
+            "r_jacobi_kepler_pc":
+            self.tidal["r_jacobi_kepler_pc"],
+            # Same, with the asynchronous term folded in (nu -> nu + zeta);
+            # this is the one r_l1_pc should be compared against.
+            "r_jacobi_zeta_pc":
+            self.tidal["r_jacobi_zeta_pc"],
+            # The integrated model's own L1 radius, in pc (None for a
+            # super-critical model, where the surface is open).
+            "r_l1_pc":
+            r_l1_pc,
         })
+
+        if self.verbose and r_l1_pc is not None:
+            print(f"      r_L1 (TIRO model)            = {r_l1_pc:.2f} pc "
+                  f"({r_l1_pc / self.tidal['r_jacobi_zeta_pc']:.3f} x "
+                  f"r_J(nu + zeta))")
 
     def _get_psi(self, r, theta, phi):
         return float(
@@ -734,6 +970,8 @@ class TiroInitialConditionSampler:
             "zeta_crit": self.zeta_crit,
             "host": self.host_name,
             "nu": self.nu,
+            "dlnm_dlnr": self.tidal["dlnm_dlnr"],
+            "nu_eff": self.nu_eff,
             "r_gal_kpc": self.r_gal_kpc,
             "m_gc_msun": self.m_gc_msun,
             "rho_0_msun_pc3": self.rho_0_msun_pc3,
@@ -807,9 +1045,12 @@ def main():
                         choices=["kepler", "mw2022_sph"],
                         default=_DEFAULT_HOST,
                         help="Host galactic potential: 'kepler' (point mass, "
-                        "nu=3) or 'mw2022_sph' (the spherical components of "
+                        "nu = 3) or 'mw2022_sph' (the spherical components of "
                         "MilkyWayPotential2022 -- NFW halo, Hernquist bulge "
-                        "and nucleus; nu and Omega^2 evaluated at r_gal).")
+                        "and nucleus; nu and Omega^2 evaluated at r_gal). nu = "
+                        "3 - dlnM/dlnR sets the tidal radius, r_J^3 = R^3 "
+                        "M_GC/(nu M(<R)), and is 1.6-1.9 for mw2022_sph over "
+                        "3-20 kpc against 3 for a point mass.")
     parser.add_argument("--M_GC", type=float, default=_DEFAULT_M_GC)
     parser.add_argument("--rho_0", type=float, default=_DEFAULT_RHO_0)
     parser.add_argument("--r_gal", type=float, default=_DEFAULT_R_GAL)

@@ -12,8 +12,8 @@ unmodified as a git submodule; everything here sits on top of it.
 | `generate_ics_for_spinning_clusters.py` | Samples phase-space initial conditions for rotating, tidally perturbed King models and writes them in Henon units with measured rotation kinematics. |
 | `critical_spin.py` | Critical spin `zeta_crit` of a TIRO model from the Jacobi integral: the fastest rotation whose zero-velocity surface is still closed at L1. |
 | `explore_critical_spin.py` | Sweeps `(r_gal, psi, rho_0)` to map how much rotation support a critically spinning model can carry. |
-| `host_potential.py` | Host galactic potentials (gala-backed), supplying `Omega^2(R)` and the tidal anisotropy `nu(R)` that TIRO needs. |
-| `jacobi_escape.py` | Restricted-three-body escape machinery: `Phi_eff`, the L1 point, and `E_Jacobi`. |
+| `host_potential.py` | Host galactic potentials (gala-backed), supplying `Omega^2(R)` and the tidal anisotropy `nu(R) = 3 - dlnM/dlnR` that TIRO needs. |
+| `jacobi_escape.py` | Restricted-three-body escape machinery for an extended spherical host: `Phi_eff`, the collinear Lagrange points, the generalised Jacobi radius `r_J^3 = R^3 m / (nu M(<R))`, and `E_Jacobi`. Run it (`python -m jacobi_escape`) to print the host's Lagrange-point structure. |
 | `collate_ics_table.py` | Collates generated IC runs into a LaTeX summary table. |
 | `plot_rotation_diagnostic.py` | Regenerates `rotation_diagnostic.png` from an existing `particles.csv`. |
 | `get_cluster_ics.sh` | Driver for the IC runs used in the paper. |
