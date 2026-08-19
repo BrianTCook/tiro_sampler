@@ -1,0 +1,3 @@
+[submodule "TIRO"]
+	path = TIRO
+	url = https://github.com/lucyarditi/TIRO.git
