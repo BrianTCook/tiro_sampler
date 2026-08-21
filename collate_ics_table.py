@@ -14,8 +14,7 @@ from scipy.spatial import cKDTree
 
 from host_potential import make_host
 
-BASE_DIR = "/home/btcook/Desktop/spinning_gcs_paper/aug19_tiro_ics_subdir/" #os.path.dirname(os.path.abspath(__file__))
-
+BASE_DIR = "/home/btcook/Desktop/spinning_gcs_paper/aug21_tiro_ics_subdir/"
 _M_GC = 2.0e5 * u.Msun
 
 
@@ -31,6 +30,7 @@ def _tidal_radius_pc(host_name, r_gal_kpc):
     host = make_host(host_name)
     lam1 = host.tidal_eigenvalue(r_gal_kpc)
     return ((G_apy * _M_GC / lam1)**(1.0 / 3.0)).to_value(u.pc)
+
 
 def _read_csv_row(path):
     with open(path) as f:
@@ -73,8 +73,7 @@ def _half_mass_relaxation_gyr(n_particles, r_hm_pc, m_gc_msun, gamma=0.6):
 
     returned in Gyr.
     """
-    t_dyn = np.sqrt((r_hm_pc * u.pc)**3 /
-                    (G_apy * m_gc_msun * u.Msun))
+    t_dyn = np.sqrt((r_hm_pc * u.pc)**3 / (G_apy * m_gc_msun * u.Msun))
     t_rh = 0.138 * n_particles / np.log(gamma * n_particles) * t_dyn
     return t_rh.to_value(u.Gyr)
 
@@ -87,8 +86,9 @@ def collect_runs(base_dir):
         phys_path = os.path.join(seed_dir, "physical_units.csv")
         particles_path = os.path.join(seed_dir, "particles.csv")
 
-        if not all(os.path.exists(p)
-                   for p in (params_path, phys_path, particles_path)):
+        if not all(
+                os.path.exists(p)
+                for p in (params_path, phys_path, particles_path)):
             print(f"  skipping {seed_dir} (missing files)", file=sys.stderr)
             continue
 
@@ -156,13 +156,11 @@ def format_latex_table(rows):
     ]
 
     for r in rows:
-        lines.append(
-            f"    {r['r_hm_pc']:.2f} & "
-            f"{r['tid_fill_ratio']:.2f} & "
-            f"{_fixed(r['rot_mean'])} & "
-            f"{r['t_rh_gyr']:.2f} & "
-            f"{r['r_gal_kpc']:.2f} \\\\"
-        )
+        lines.append(f"    {r['r_hm_pc']:.2f} & "
+                     f"{r['tid_fill_ratio']:.2f} & "
+                     f"{_fixed(r['rot_mean'])} & "
+                     f"{r['t_rh_gyr']:.2f} & "
+                     f"{r['r_gal_kpc']:.2f} \\\\")
 
     lines += [
         r"    \hline",

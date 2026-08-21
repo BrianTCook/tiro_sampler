@@ -97,7 +97,9 @@ from TIRO import Model
 from critical_spin import (boundary_jacobi_energy, critical_zeta, l1_radius,
                            tidal_strength)
 from host_potential import make_host
-from jacobi_escape import giersz_alpha
+from jacobi_escape import (NEWTON_G, barycentre_fraction, corotation_potential,
+                           critical_energy, plane_potential_maximum,
+                           tilde_energy)
 
 _DEFAULT_M_GC = 2.0e5
 _DEFAULT_RHO_0 = 1e2
@@ -117,12 +119,12 @@ _DEFAULT_ZETA = -1.0
 # by a fraction of a percent keeps the model maximally spinning *and* verifiably
 # bound. Set to 1.0 to sit exactly on the critical curve (the check will fail).
 _ZETA_SAFETY = 0.99
-# gamma of the Coulomb logarithm ln Lambda = ln(gamma N) in the Giersz, Heggie &
-# Hurley (2008) alpha, used only for the comparison column in
-# particle_energies.csv.  Matches _GAMMA in
-# ../krios_python/python_scripts/initial_energy_distributions.py, so the two
-# pipelines normalise the same way; nothing in the sampling depends on it.
-_GIERSZ_GAMMA = 0.6
+# Angular directions probed per radius when building the density envelope, and
+# the margin applied to the resulting maximum.  See _prepare_shells: the
+# envelope has to bound rho over the whole shell or the rejection sampling
+# silently stops being rejection sampling.
+_SHELL_ANGLE_SAMPLES = 24
+_SHELL_ENVELOPE_SAFETY = 1.05
 
 
 @njit(parallel=True, fastmath=True)
@@ -140,6 +142,35 @@ def calc_pe_numba(pos, masses):
             local_pe -= masses[i] * masses[j] * inv_dist
         total_pe += local_pe
     return total_pe
+
+
+@njit(parallel=True, fastmath=True)
+def calc_specific_potential_numba(pos, masses):
+    """Per-particle specific self-potential, sum_j!=i m_j/|r_i - r_j| (G = 1).
+
+    The companion of :func:`calc_pe_numba`, which sums the same pairs into one
+    total; this keeps them per particle because Weatherford et al. (2024)
+    Eq. (5) needs Phi_GC at each star, not the cluster's binding energy.  Same
+    O(N^2) cost, so it roughly doubles the pipeline's pair work.
+
+    Returned unsigned and without G: the caller multiplies by -G in whatever
+    units it is working in.  Softening is deliberately absent -- these are the
+    exact pair sums for the realisation as written, which is the point of using
+    them rather than the model's own analytic Phi_GC.
+    """
+    n = pos.shape[0]
+    out = np.zeros(n)
+    for i in prange(n):
+        total = 0.0
+        for j in range(n):
+            if j == i:
+                continue
+            dx = pos[i, 0] - pos[j, 0]
+            dy = pos[i, 1] - pos[j, 1]
+            dz = pos[i, 2] - pos[j, 2]
+            total += masses[j] / np.sqrt(dx * dx + dy * dy + dz * dz)
+        out[i] = total
+    return out
 
 
 @njit(fastmath=True)
@@ -383,8 +414,9 @@ class TiroInitialConditionSampler:
             _DEFAULT_ZETA if zeta is None else float(zeta))
         # omega^2 = (1+zeta)*Omega^2, so zeta < -1 is unphysical.
         if self.zeta_requested is not None and self.zeta_requested < -1.0:
-            raise ValueError(f"zeta must be >= -1 (got {self.zeta_requested}); "
-                             "omega^2 = (1+zeta)*Omega^2 would be negative.")
+            raise ValueError(
+                f"zeta must be >= -1 (got {self.zeta_requested}); "
+                "omega^2 = (1+zeta)*Omega^2 would be negative.")
         self.r_gal_kpc = r_gal_kpc
         self.m_gc_msun = m_gc_msun
         self.rho_0_msun_pc3 = rho_0_msun_pc3
@@ -474,10 +506,11 @@ class TiroInitialConditionSampler:
             print(f"      dlnM/dlnR at r_gal           = "
                   f"{self.tidal['dlnm_dlnr']:.4f}")
             print(f"      nu = 3 - dlnM/dlnR           = {self.nu:.4f}")
-            print(f"      r_J = (G M_GC/(nu Omega^2))^(1/3) = "
-                  f"{self.tidal['r_jacobi_pc']:.2f} pc "
-                  f"({self.tidal['r_jacobi_pc'] / self.tidal['r_jacobi_kepler_pc']:.3f}"
-                  f"x the Keplerian nu = 3 value)")
+            print(
+                f"      r_J = (G M_GC/(nu Omega^2))^(1/3) = "
+                f"{self.tidal['r_jacobi_pc']:.2f} pc "
+                f"({self.tidal['r_jacobi_pc'] / self.tidal['r_jacobi_kepler_pc']:.3f}"
+                f"x the Keplerian nu = 3 value)")
             print(f"      epsilon                      = {eps:.3e}")
             if self.zeta_crit is not None:
                 print(f"      zeta_crit                    = "
@@ -660,8 +693,8 @@ class TiroInitialConditionSampler:
         # from zeta = -1 all the way to 0.99 zeta_crit, so a ratio that is not
         # ~1.000 means something is wrong with nu, epsilon or the model, not
         # with the leading-order expansion.
-        r_l1_pc = (None if self.r_tidal_dimless is None else
-                   float(self.r_tidal_dimless * self.r_king.value))
+        r_l1_pc = (None if self.r_tidal_dimless is None else float(
+            self.r_tidal_dimless * self.r_king.value))
 
         self.phys.update({
             "r_king_pc":
@@ -726,44 +759,88 @@ class TiroInitialConditionSampler:
         )
 
     def _prepare_shells(self):
-        n_shells = max(int(np.ceil(1e-3 * self.n)), 10)
-        r_max = self.model.boundary(np.pi / 2.0, 0.0)
+        """Build the radial shells and the density envelope the sampler needs.
+
+        Rejection sampling into shells is only correct if two conditions hold
+        together, and the previous version of this method broke both.
+
+        1. ``rho_max_in_shell[k]`` must bound rho over the **whole** shell --
+           every radius in it and every direction -- because
+           :meth:`_sample_positions` proposes a radius anywhere in the shell and
+           accepts with probability ``rho/rho_max_in_shell[k]``.  It used to be
+           measured at the shell's midpoint only, varying the angles.  With rho
+           falling steeply outward and shells a factor 3.16 wide (10 shells,
+           geometrically spaced over five decades), the true rho at the inner
+           edge exceeded that "maximum" by up to a factor of 31, so every
+           proposal inside the midpoint was accepted unconditionally and the
+           inner part of each shell was massively over-weighted.  The realised
+           profile came out far more centrally concentrated than the model:
+           M(<0.27 r_trunc) was 0.70 of the mass against the model's 0.51.
+
+           Note this was a *radial* failure, not an angular one, so it was
+           independent of zeta and just as large for a non-rotating model as for
+           a maximally spinning one -- 31.01 against 31.14 at zeta = -1 and 0.
+           Asphericity never entered.
+
+        2. The shell must be proposed with probability proportional to
+           ``V_k rho_max_in_shell[k]``, not to ``V_k <rho>_k``.  Only then does
+           the per-shell acceptance rate ``<rho>_k/rho_max_k`` cancel the
+           proposal weight and leave P(land in shell k) proportional to
+           ``V_k <rho>_k``, which is the mass.  Weighting by ``V_k <rho>_k``
+           instead leaves a residual factor ``<rho>_k/rho_max_k`` that varies
+           from shell to shell.  On its own this one is mild -- for a nearly
+           spherical model the ratio is close to the constant 1/safety and
+           divides out -- which is presumably why it survived.
+
+        rho decreases outward along every ray of a King-type model, so the
+        envelope is taken at the shell's inner edge; a few interior radii are
+        checked as well so that a non-monotonic ray would be caught rather than
+        silently violating the bound.
+        """
+        # Shells are now narrow enough that the envelope is not wasteful: a
+        # factor ~1.12 in radius rather than 3.16, so <rho>/rho_max stays close
+        # to 1 and the acceptance rate with it.
+        n_shells = max(int(np.ceil(1e-3 * self.n)), 100)
+
+        # The boundary is direction-dependent (that is what the tidal and
+        # centrifugal harmonics do to it), so take the largest one rather than
+        # assuming the +x ray is it, or the outermost shell would clip whichever
+        # direction reaches further.
+        r_max = max(
+            float(self.model.boundary(theta, phi))
+            for theta, phi in ((np.pi / 2.0, 0.0), (np.pi / 2.0, np.pi / 2.0),
+                               (0.0, 0.0), (np.pi / 4.0, np.pi / 4.0)))
         r_edges = np.geomspace(1e-5 * r_max, r_max, n_shells + 1)
         shell_vols = (4.0 / 3.0) * np.pi * (r_edges[1:]**3 - r_edges[:-1]**3)
-        r_mid = 0.5 * (r_edges[:-1] + r_edges[1:])
 
         rho_max_in_shell = np.zeros(n_shells)
-        rho_avg_in_shell = np.zeros(n_shells)
-        for i, r in enumerate(r_mid):
-            rho_samples = []
+        for i in range(n_shells):
+            # Radii to probe: the inner edge carries the maximum for a
+            # monotonically decreasing rho, the rest guard against a ray that
+            # is not monotonic.
+            probe_radii = r_edges[i] + np.array(
+                [0.0, 0.1, 0.35]) * (r_edges[i + 1] - r_edges[i])
             rho_max = 0.0
-            n_attempts = 0
-            prev_avg = self._get_rho(
-                np.array([self._get_psi(r, np.pi / 2.0, 0.0)]))[0]
-            prev_max = prev_avg
-            while n_attempts < 500:
-                n_attempts += 1
-                theta = np.arccos(self.rng.uniform(-1.0, 1.0))
-                phi = self.rng.uniform(0.0, 2.0 * np.pi)
-                psi = self._get_psi(r, theta, phi)
-                rho = self._get_rho(np.array([psi]))[0]
-                rho_samples.append(rho)
-                rho_max = max(rho, rho_max)
-                if n_attempts >= 30 and n_attempts % 10 == 0:
-                    cur_avg = float(np.mean(rho_samples))
-                    if (abs(cur_avg - prev_avg) / (prev_avg + 1e-30) < 1e-3
-                            and abs(rho_max - prev_max) /
-                        (prev_max + 1e-30) < 1e-3):
-                        break
-                    prev_avg = cur_avg
-                    prev_max = rho_max
-            rho_max_in_shell[i] = rho_max * 1.1
-            rho_avg_in_shell[i] = float(np.mean(rho_samples))
+            for r in probe_radii:
+                for _ in range(_SHELL_ANGLE_SAMPLES):
+                    theta = np.arccos(self.rng.uniform(-1.0, 1.0))
+                    phi = self.rng.uniform(0.0, 2.0 * np.pi)
+                    rho = self._get_rho(
+                        np.array([self._get_psi(float(r), theta, phi)]))[0]
+                    rho_max = max(rho, rho_max)
+            rho_max_in_shell[i] = rho_max * _SHELL_ENVELOPE_SAFETY
 
         self.r_edges = r_edges
         self.rho_max_in_shell = rho_max_in_shell
-        weights = rho_avg_in_shell * shell_vols
-        self.shell_probs = weights / weights.sum()
+        # Proposal weight V_k rho_max_k, so that multiplying by the acceptance
+        # rate <rho>_k/rho_max_k leaves V_k <rho>_k -- the mass in the shell.
+        weights = rho_max_in_shell * shell_vols
+        total = weights.sum()
+        if not (total > 0.0 and np.isfinite(total)):
+            raise RuntimeError(
+                "density envelope came out zero or non-finite over every "
+                "shell; the model integration has probably failed.")
+        self.shell_probs = weights / total
 
     def generate_realization(self, seed):
         if self.verbose:
@@ -790,17 +867,18 @@ class TiroInitialConditionSampler:
             print("  -> Sampling velocities from distribution function...")
         self._sample_velocities()
 
-        # Before the rescale: it mutates self.pos and self.vel in place, and
-        # the energies are built from the sampled TIRO-unit quantities anyway.
+        # Before the rescale, which mutates self.pos and self.vel in place:
+        # the energies need the sampled positions in King radii and the sampled
+        # velocities in TIRO units, both of which it rescales away.
         self.energies = self._jacobi_energies()
 
         if self.verbose:
             e_t = self.energies["E_tilde"]
-            n_pos = int(np.count_nonzero(self.energies["E_J_kms2"] > 0.0))
+            n_pos = int(np.count_nonzero(e_t > 0.0))
             print(f"      max E_J = "
                   f"{self.energies['E_J_kms2'].max():+.4f} (km/s)^2, "
                   f"max E_tilde = {e_t.max():+.4f}, "
-                  f"{n_pos} particle(s) with E_J > 0")
+                  f"{n_pos} particle(s) with E_tilde > 0")
 
         if self.verbose:
             print("  -> Rescaling to Henon units...")
@@ -850,8 +928,19 @@ class TiroInitialConditionSampler:
                 self._get_psi(r, t, p) for r, t, p in zip(r_c, theta_c, phi_c)
             ])
             rho_c = self._get_rho(psi_c)
-            accept = self.rng.random(n_rem) < (rho_c /
-                                               self.rho_max_in_shell[idx])
+            ratio = rho_c / self.rho_max_in_shell[idx]
+            # The envelope must bound rho everywhere in the shell.  If it does
+            # not, ratio > 1 and those proposals are accepted unconditionally --
+            # which is no longer rejection sampling, and silently biases the
+            # profile toward wherever the envelope is violated.  This used to
+            # happen at ratios up to 31; see _prepare_shells.  Cheap to check,
+            # and a failure here is a real distributional error rather than a
+            # tolerance issue, so it is worth being loud about.
+            worst = float(ratio.max()) if ratio.size else 0.0
+            if worst > 1.0:
+                self._envelope_violation = max(
+                    getattr(self, "_envelope_violation", 0.0), worst)
+            accept = self.rng.random(n_rem) < ratio
             indices = np.where(resample)[0][accept]
             p_r[indices] = r_c[accept]
             p_theta[indices] = theta_c[accept]
@@ -859,6 +948,17 @@ class TiroInitialConditionSampler:
             self.p_psi = p_psi
             self.p_psi[indices] = psi_c[accept]
             resample[indices] = False
+        worst = getattr(self, "_envelope_violation", 0.0)
+        if worst > 1.0:
+            warnings.warn(
+                f"density envelope violated during position sampling: "
+                f"rho/rho_max reached {worst:.2f} > 1, so those proposals were "
+                f"accepted unconditionally and the sampled radial profile is "
+                f"biased toward where the violation occurred.  Raise "
+                f"_SHELL_ENVELOPE_SAFETY or the shell count in "
+                f"_prepare_shells.",
+                RuntimeWarning,
+                stacklevel=2)
         self.pos = spherical_to_cartesian(p_r, p_theta, p_phi).T
 
     def _sample_velocities(self):
@@ -879,13 +979,6 @@ class TiroInitialConditionSampler:
             indices = np.where(resample)[0][accept]
             v_final[indices] = v_c[accept]
             resample[indices] = False
-
-        # The co-rotating (omega-frame) speed, kept because it -- not the
-        # inertial velocity written to particles.csv -- is the ``v`` of the
-        # Jacobi integral the DF is built on.  ``_jacobi_energies`` needs it and
-        # cannot recover it after ``_rescale_to_henon_units`` scales positions
-        # and velocities by different factors.
-        self.v_cr_dimless = v_final
 
         cos_t = self.rng.uniform(-1.0, 1.0, self.n)
         theta = np.arccos(cos_t)
@@ -922,144 +1015,198 @@ class TiroInitialConditionSampler:
         self.vel = vel
 
     def _jacobi_energies(self):
-        """Per-particle Jacobi energy and its two normalised forms.
+        """Per-particle Jacobi energy and its normalised form.
 
-        Returns a dict of ``(n,)`` arrays -- ``E_J_kms2``, ``E_tilde``,
-        ``E_tilde_giersz`` -- and records the scalars each was divided by in
-        ``self.phys``.  Written to ``particle_energies.csv``; nothing here
-        touches ``particles.csv``, which stays exactly as KRIOS expects it.
+        Returns a dict of ``(n,)`` arrays -- ``E_J_kms2`` and ``E_tilde`` -- and
+        records the scalars behind them in ``self.phys``.  Written to
+        ``particle_energies.csv``; nothing here touches ``particles.csv``, which
+        stays exactly as KRIOS expects it.
 
-        The energy
-        ----------
-        This is ``critical_spin``'s criterion evaluated at every star instead of
-        only at the model's edge, so the two cannot disagree.  That module's
-        identity is Phi_eff = -psi/a up to an additive constant, hence for a
-        star at radius r with co-rotating speed v,
+        This is Weatherford et al. (2024) Eqs. (2)-(5) evaluated directly, with
+        one Phi_eff throughout:
 
-            a E_J = (1/2) v_hat^2 - psi(r) + psi(r_L1),
+            Phi_eff(r') = Phi_GC(r) + Phi_host(|r' - r'_host|)
+                          - (1/2)|Omega x r'|^2                        (5)
+            E_J    = (1/2)|v|^2 + Phi_eff(r') - A                      (2)
+            A      = max[Phi_eff(z' = 0)]                              (5)
+            E_crit = Phi_eff(r'_L1) - A                                (4)
+            E_tilde = (E_J - E_crit)/|E_crit|                          (3)
 
-        the constant cancelling between the two psi terms.  ``self.p_psi`` is
-        psi(r) per particle from the position sampling and
-        ``self.v_cr_dimless`` is v_hat from the velocity sampling, so no new
-        integration is needed; dividing by a = ``vel_scale_inv_kms`` puts it in
-        (km/s)^2.
+        with v the velocity in the frame rotating at the *orbital* Omega, A
+        brute-forced by ``jacobi_escape.plane_potential_maximum`` and r'_L1
+        solved by ``l1_distance``.
 
-        Two things about the frame, both of which follow the project's
-        primed/unprimed convention (see ``jacobi_escape``).  The velocity is the
-        **co-rotating** one, in the frame turning at the cluster's own spin
-        omega about the cluster axis -- that is the frame TIRO's DF is built in,
-        and it is *not* the inertial velocity written to particles.csv, which
-        has omega x r added back.  And the radius is unprimed: psi is a function
-        of the cluster-centred r, with the host entering only through the
-        perturbation already folded into it.
+        One Phi_eff, one saddle, for any zeta
+        -------------------------------------
+        The single thing worth understanding here.  Eq. (5) contains Omega and
+        no omega: the escape barrier is set by the host tide and the cluster's
+        mass, not by how fast the cluster's figure spins.  So r'_L1, A and
+        E_crit are all spin-independent, and the cluster's rotation enters only
+        where it physically should -- through the stars themselves, which a
+        rotating DF gives more azimuthal velocity and hence larger E_J.
 
-        Sign convention: E_J > 0 means the star can reach L1 and leave.  Every
-        particle sampled from a sub-critical model has E_J < 0 identically,
-        because the DF is sampled with v_hat <= v_esc = sqrt(2 psi), so
-        (1/2)v_hat^2 - psi <= 0 and therefore E_J <= psi(r_L1), which is the
-        ``boundary_jacobi_energy`` that ``assert_jacobi_surface_closed`` has
-        already checked is negative.  The file is therefore a consistency check
-        and a distribution of how close the tail sits to the saddle, not an
-        escaper census -- a positive value in it means the criticality check was
-        bypassed with --allow_supercritical.
+        An earlier version took E_J from TIRO's psi instead, which is cheaper
+        (O(N), no pair sum) but wrong for zeta != 0: TIRO's psi is built in the
+        frame co-rotating with the cluster's *figure* at omega, so its saddle
+        moves inward as (nu + zeta)^(-1/3) -- 23 pc against 85 pc at
+        0.999 zeta_crit -- while Eq. (5)'s does not move at all.  Dividing one
+        by the other made E_tilde a ratio of quantities defined against
+        different saddles.  Computing Eq. (2) directly removes the seam rather
+        than papering over it, and costs one O(N^2) pair sum.
 
-        The two normalisations
-        ----------------------
-        Both are the same E_J over a different constant, so they differ by one
-        per-model factor and not per particle:
+        Phi_GC is the realisation's **own** self-potential, summed pair by pair
+        by :func:`calc_specific_potential_numba` -- not the model's analytic
+        Phi_GC, and not a point mass.  That is what
+        ``jacobi_escape.effective_potential`` asks for, it needs no matching
+        constant, and it cannot inherit any mismatch between the sampled
+        particles and the model they were drawn from.  (Inverting TIRO's psi was
+        tried: it reproduces -G M/r outside the cluster to 3e-5 and the pair sum
+        to 0.1% over the outer half, but disagrees by ~12% in the core, and the
+        pair sum is the one that is true by construction for the particles
+        actually written out.)
 
-            E_tilde        = E_J / |E_crit|,     |E_crit| = (3/2) G M_GC / r_L1
-            E_tilde_giersz = E_J / |E_giersz|,   |E_giersz| = alpha G M_GC / r_t
+        Frames and geometry
+        -------------------
+        ``self.pos`` is the unprimed, cluster-centred r in King radii and
+        ``self.vel`` the *inertial* velocity in the cluster's centre-of-mass
+        frame -- the generator has already added the figure rotation back in, so
+        it is not the co-rotating velocity the DF was sampled with.  The
+        conversion to Eq. (2)'s v is
 
-        ``E_tilde`` is the L1 saddle depth of ``jacobi_escape.escape_energy_scale``,
-        evaluated at this model's own r_L1 rather than at the leading-order
-        r_J(nu + zeta) they agree with to 0.03%.  It depends on nothing but the
-        cluster mass and that radius.
+            v = v_cf - Omega x r,
 
-        ``E_tilde_giersz`` is the same E_J over the Giersz, Heggie & Hurley
-        (2008) energy *scale*, with alpha = 1.5 - (ln(gamma N)/N)^(1/4) and
-        r_t the truncation radius -- which is what those scripts mean by r_t
-        ("the largest particle radius in the file"), and where Phi_GC(r_t) is
-        exactly -G M_GC/r_t because all of the mass is inside.  It is offered
-        for comparison with that pipeline and for nothing else, and the reason
-        is worth being concrete about: alpha is a function of N, taking the
-        values
+        the cluster's own orbital motion cancelling between the star and the
+        frame, so only the unprimed r enters.  For zeta = 0 this returns TIRO's
+        co-rotating velocity; for zeta != 0 it does not, and the difference is
+        the spin, correctly counted once.
 
-            N       2e3     1e4     1e5     1e6     1e7
-            alpha   1.256   1.328   1.398   1.440   1.465
+        Sign convention, and it is **E_tilde** that carries it, not E_J.  The
+        threshold is E_J = E_crit, i.e. E_tilde = 0, and a star escapes when
+        E_tilde > 0.  E_J itself is negative for essentially every bound star,
+        because it is measured down from the maximum of Phi_eff on the plane;
+        reading its sign as an escape criterion is the mistake
+        ``jacobi_escape.tilde_energy`` warns about and would be wrong by one
+        full unit of E_tilde.
 
-        at gamma = 0.6, so the *same physical cluster* realised at 2e3 and 1e6
-        particles gets energy axes differing by 15%, while its dynamics are
-        identical.  ``E_tilde`` does not move.  N here is ``self.n``, the number
-        actually written, which for these ICs is the number KRIOS will
-        integrate; ``giersz_n``, ``giersz_gamma``, ``giersz_alpha`` and both
-        scale factors all go into physical_units.csv, so either axis can be
-        recovered or renormalised to a different N after the fact.
-
-        Note the two radii are not the same one: r_L1 is the saddle and r_t the
-        model's edge, so the ratio between the columns is
-        alpha r_L1 / (1.5 r_t), not alpha/1.5.  For the reference models r_L1
-        exceeds r_t, which is what "tidally underfilling" means.
-
-        What ``E_tilde_giersz`` is NOT
-        ------------------------------
-        It is not the Giersz *criterion*, and the difference is not pedantic.
-        That criterion is a statement about a different energy in a different
-        frame -- E_GC = (1/2)v^2 + Phi_GC(r) with v in the cluster's centre-of-
-        mass frame and no host term at all -- tested against alpha Phi_GC(r_t).
-        Borrowing alpha Phi_GC(r_t) as a unit for E_J, which is what this column
-        does, changes the axis and nothing else.
-
-        So the anchors here are **not** those of
-        ``../krios_python/python_scripts/initial_energy_distributions.py``.
-        There the energy is E_GC, the Giersz boundary sits at e = -1 and e = 0
-        means formally unbound.  In both columns of this file the threshold is
-        at zero, because the zero point comes from Phi_eff(L1) and is untouched
-        by the choice of denominator:
+        Anchors:
 
             E_tilde = 0   the star can reach L1 and leave
-            E_tilde = 1   it can reach the corotation level
+            E_tilde = 1   it can reach A, the maximum of Phi_eff on the plane
 
-        Applying that script's ``e > -1`` cut to a column of this one would be
-        meaningless.  Comparing the two criteria means computing E_GC as well,
-        which is that script's job, not this one's.
+        These are not the anchors of
+        ``../krios_python/python_scripts/initial_energy_distributions.py``,
+        whose ``e`` normalises a cluster-frame energy E_GC by a calibrated
+        tidal-boundary constant and puts its escape boundary at e = -1.
+        Applying that script's ``e > -1`` cut to this column, or this file's
+        ``E_tilde > 0`` to that one, would be meaningless.
         """
-        # l1_radius rather than self.r_tidal_dimless, which is None for a model
-        # sampled under --allow_supercritical.  The saddle exists either way --
-        # what fails above zeta_crit is the surface closing around it, not the
-        # solve -- and that is exactly the case whose E_J is worth looking at.
-        r_l1_dimless = (self.r_tidal_dimless if self.r_tidal_dimless is not None
-                        else l1_radius(self.model))
-        psi_l1 = boundary_jacobi_energy(self.model, r_l1=r_l1_dimless)
+        m_gc_msun = self.phys["m_gc_phys_msun"]
 
-        e_j_dimless = 0.5 * self.v_cr_dimless**2 - self.p_psi + psi_l1
-        e_j_kms2 = e_j_dimless / self.phys["vel_scale_inv_kms"]
+        # The host, handed over as the (Phi, M(<r), M_tot) triple rather than
+        # left to jacobi_escape's built-in Milky Way, so that --host kepler is
+        # actually Keplerian here.  M_tot decides whether the host recoils, and
+        # so whether A sits at the equilateral L4 (point mass, nu = 3) or at L3
+        # (extended halo) -- a ~1% difference in E_crit, all of it in A.
+        phi_host, mass_host, m_host_total = self.host.jacobi_escape_host()
+        omega_mag = float((np.sqrt(self.host.omega2(self.r_gal_kpc)) *
+                           u.kpc).to_value(u.km / u.s))
+        mu = barycentre_fraction(m_gc_msun, m_host_total)
 
-        m_gc = self.phys["m_gc_phys_msun"] * u.Msun
-        r_l1_pc = r_l1_dimless * self.r_king.value
-        r_trunc_pc = self.phys["r_trunc_pc"]
+        # Cached across realisations: A and E_crit depend only on (r_gal, M_GC,
+        # host), all fixed for the life of the sampler, and the plane search
+        # costs ~1 s.
+        if getattr(self, "_critical_energy", None) is None:
+            self._critical_energy = critical_energy(self.r_gal_kpc,
+                                                    m_gc_msun,
+                                                    omega_mag,
+                                                    phi_host=phi_host,
+                                                    mass_host=mass_host,
+                                                    m_host_total=m_host_total)
+            self._plane_max = plane_potential_maximum(
+                self.r_gal_kpc,
+                m_gc_msun,
+                omega_mag,
+                phi_host=phi_host,
+                mass_host=mass_host,
+                m_host_total=m_host_total)
+        e_crit, a_ref, phi_l1_kms2, ell_l1_kpc = self._critical_energy
+        _, r_a_kpc, phi_a_rad = self._plane_max
 
-        e_crit = float((1.5 * G_apy * m_gc / (r_l1_pc * u.pc)).to_value(
-            (u.km / u.s)**2))
-        alpha = giersz_alpha(self.n, _GIERSZ_GAMMA)
-        e_giersz = float((alpha * G_apy * m_gc / (r_trunc_pc * u.pc)).to_value(
-            (u.km / u.s)**2))
+        # --- Phi_GC: the realisation's own self-potential, exactly ------------
+        # jacobi_escape's G rather than astropy's, in pc (km/s)^2 / Msun --
+        # self.pos is in King radii and r_king is in pc at this point, before
+        # _rescale_to_henon_units.  The two G values differ by 1.7e-6 relative,
+        # which is nothing on its own but would be the only term in Phi_eff not
+        # sharing a gravitational constant with the Phi_host, A and E_crit it is
+        # added to.  Using one G makes the whole effective potential internally
+        # consistent and drops the round-trip check against jacobi_escape's own
+        # helpers from 5e-4 (km/s)^2 to machine zero.
+        g_pc = NEWTON_G * 1e3
+        pos_pc = self.pos * self.r_king.value
+        m_particle = np.full(self.n, m_gc_msun / self.n)
+        phi_gc = -g_pc * calc_specific_potential_numba(pos_pc, m_particle)
+
+        # --- geometry: unprimed r (cluster-centred) -> primed r' -------------
+        # Origin on the rotation axis: the cluster sits at (1 - mu) R along +x
+        # and the host at -mu R, so the host-to-particle distance is |r + R x|
+        # whatever mu is, while the centrifugal term needs |r'| measured from
+        # the axis.  mu = 0 for a non-recoiling host collapses both to the
+        # host-centred case.
+        pos_kpc = pos_pc * 1e-3
+        r_axis = pos_kpc + np.array([(1.0 - mu) * self.r_gal_kpc, 0.0, 0.0])
+        d_host = np.linalg.norm(pos_kpc + np.array([self.r_gal_kpc, 0.0, 0.0]),
+                                axis=1)
+
+        # --- velocity in the Omega-rotating frame ----------------------------
+        # self.vel is the *inertial* velocity in the cluster's centre-of-mass
+        # frame (the generator has already added the figure rotation omega x r
+        # back in).  Transforming to the frame rotating at the orbital Omega:
+        #
+        #   v_rot = (v_cf + Omega x r'_GC) - Omega x r' = v_cf - Omega x r,
+        #
+        # the cluster's own orbital motion cancelling out, so only the unprimed
+        # r enters and mu drops out.  Note this is *not* TIRO's co-rotating
+        # velocity unless zeta = 0: for a fast rotator the spin shows up here as
+        # genuine extra speed, which is exactly how it should enter E_J.
+        vel_kms = self.vel / np.sqrt(self.phys["vel_scale_inv_kms"])
+        omega_vec = np.array([0.0, 0.0, omega_mag])
+        v_rot = vel_kms - np.cross(omega_vec, pos_kpc)
+
+        # --- Eqs. (5), (2), (3) ---------------------------------------------
+        phi_eff = (phi_host(d_host) + phi_gc -
+                   0.5 * np.sum(np.cross(r_axis, omega_vec)**2, axis=-1))
+        e_j = 0.5 * np.sum(v_rot**2, axis=-1) + phi_eff - a_ref
+        e_tilde = tilde_energy(e_j, e_crit)
+
+        u_r = corotation_potential(self.r_gal_kpc,
+                                   omega_mag,
+                                   phi_host=phi_host,
+                                   mass_host=mass_host,
+                                   m_cluster=m_gc_msun,
+                                   m_host_total=m_host_total)
 
         self.phys.update({
-            "psi_l1": psi_l1,
-            "r_l1_used_pc": r_l1_pc,
-            "e_crit_kms2": e_crit,
-            "e_crit_giersz_kms2": e_giersz,
-            "giersz_alpha": alpha,
-            "giersz_gamma": _GIERSZ_GAMMA,
-            "giersz_n": self.n,
+            "r_l1_pc":
+            ell_l1_kpc * 1e3,
+            "a_ref_kms2":
+            a_ref,
+            "a_minus_u_kms2":
+            a_ref - u_r,
+            "a_r_over_rgal":
+            r_a_kpc / self.r_gal_kpc,
+            "a_phi_deg":
+            np.degrees(phi_a_rad),
+            "phi_l1_kms2":
+            phi_l1_kms2,
+            "e_crit_kms2":
+            e_crit,
+            "m_host_total_msun":
+            (np.inf if m_host_total is None else float(m_host_total)),
+            "barycentre_mu":
+            mu,
         })
 
-        return {
-            "E_J_kms2": e_j_kms2,
-            "E_tilde": e_j_kms2 / e_crit,
-            "E_tilde_giersz": e_j_kms2 / e_giersz,
-        }
+        return {"E_J_kms2": e_j, "E_tilde": e_tilde}
 
     def _rescale_to_henon_units(self):
         # Self-gravity PE (per-pair ~ 1/r, so rescales as 1/A under pos *= A).
@@ -1232,7 +1379,6 @@ class TiroInitialConditionSampler:
             "vz": self.vel[:, 2],
             "E_J_kms2": self.energies["E_J_kms2"],
             "E_tilde": self.energies["E_tilde"],
-            "E_tilde_giersz": self.energies["E_tilde_giersz"],
         }).to_csv(self.out_dir / "particle_energies.csv",
                   index=False,
                   float_format="%.12g")
@@ -1252,35 +1398,38 @@ def main():
                             f"-1 is non-rotating (default {_DEFAULT_ZETA:g}). "
                             "Must be >= -1 and below zeta_crit, or the model "
                             "is unbound; --allow_supercritical overrides.")
-    zeta_group.add_argument("--zeta_max",
-                            action="store_true",
-                            help="Solve for zeta_crit at this (psi, epsilon, "
-                            "nu) and use zeta = zeta_safety * zeta_crit -- the "
-                            "fastest spin whose Jacobi surface is still "
-                            "closed.")
-    parser.add_argument("--zeta_safety",
-                        type=float,
-                        default=_ZETA_SAFETY,
-                        help="Fraction of zeta_crit used by --zeta_max "
-                        f"(default {_ZETA_SAFETY}). 1.0 sits exactly on the "
-                        "critical curve, where the closed-surface check cannot "
-                        "succeed.")
+    zeta_group.add_argument(
+        "--zeta_max",
+        action="store_true",
+        help="Solve for zeta_crit at this (psi, epsilon, "
+        "nu) and use zeta = zeta_safety * zeta_crit -- the "
+        "fastest spin whose Jacobi surface is still "
+        "closed.")
+    parser.add_argument(
+        "--zeta_safety",
+        type=float,
+        default=_ZETA_SAFETY,
+        help="Fraction of zeta_crit used by --zeta_max "
+        f"(default {_ZETA_SAFETY}). 1.0 sits exactly on the "
+        "critical curve, where the closed-surface check cannot "
+        "succeed.")
     parser.add_argument("--allow_supercritical",
                         action="store_true",
                         help="Skip the zeta_crit check and downgrade the "
                         "open-Jacobi-surface error to a warning, sampling the "
                         "model anyway. Its particles will include genuinely "
                         "unbound stars at t = 0.")
-    parser.add_argument("--host",
-                        choices=["kepler", "mw2022_sph"],
-                        default=_DEFAULT_HOST,
-                        help="Host galactic potential: 'kepler' (point mass, "
-                        "nu = 3) or 'mw2022_sph' (the spherical components of "
-                        "MilkyWayPotential2022 -- NFW halo, Hernquist bulge "
-                        "and nucleus; nu and Omega^2 evaluated at r_gal). nu = "
-                        "3 - dlnM/dlnR sets the tidal radius, r_J^3 = R^3 "
-                        "M_GC/(nu M(<R)), and is 1.6-1.9 for mw2022_sph over "
-                        "3-20 kpc against 3 for a point mass.")
+    parser.add_argument(
+        "--host",
+        choices=["kepler", "mw2022_sph"],
+        default=_DEFAULT_HOST,
+        help="Host galactic potential: 'kepler' (point mass, "
+        "nu = 3) or 'mw2022_sph' (the spherical components of "
+        "MilkyWayPotential2022 -- NFW halo, Hernquist bulge "
+        "and nucleus; nu and Omega^2 evaluated at r_gal). nu = "
+        "3 - dlnM/dlnR sets the tidal radius, r_J^3 = R^3 "
+        "M_GC/(nu M(<R)), and is 1.6-1.9 for mw2022_sph over "
+        "3-20 kpc against 3 for a point mass.")
     parser.add_argument("--M_GC", type=float, default=_DEFAULT_M_GC)
     parser.add_argument("--rho_0", type=float, default=_DEFAULT_RHO_0)
     parser.add_argument("--r_gal", type=float, default=_DEFAULT_R_GAL)

@@ -148,6 +148,60 @@ class _GalaHost:
         # T is symmetric; eigvalsh returns ascending eigenvalues.
         return np.linalg.eigvalsh(T)[-1] / u.s**2
 
+    def jacobi_escape_host(self):
+        """``(phi_host, mass_host, m_host_total)`` for ``jacobi_escape``.
+
+        That module is written against a bare spherical pair -- Phi(r) in
+        (km/s)^2 and M(<r) in Msun, both over r in kpc -- rather than against
+        gala, so that its Lagrange-point and A machinery works for any host and
+        hence any nu.  This adapter supplies the pair for *this* host, so that
+        ``--host kepler`` gets a Keplerian A and not a Milky Way one.
+
+        M(<r) is taken as r^2 Phi'(r)/G rather than from gala's own
+        ``mass_enclosed``, which guarantees it is the exact companion of the
+        Phi being returned: the collinear solves balance forces from the mass
+        while the energies come from the potential, and a mismatched pair would
+        put a small inconsistency inside a difference of two numbers of order
+        1e5.
+
+        The third element is the mass that carries the host's *inertia*, which
+        decides whether the host recoils and therefore whether A sits at L4/L5
+        or at L3 -- an O(1) question, not a refinement.  See
+        ``jacobi_escape.barycentre_fraction``.  Subclasses override
+        ``m_host_total`` to answer it.
+        """
+        pot = self.gala_potential()
+
+        def _column(r):
+            """Flatten arbitrary-shaped radii into gala's (3, N) query array."""
+            r = np.asarray(r, dtype=float)
+            flat = np.maximum(np.ravel(np.atleast_1d(r)), 1e-12)
+            q = np.zeros((3, flat.size)) * u.kpc
+            q[0] = flat * u.kpc
+            return r.shape, q
+
+        def phi_host(r):
+            shape, q = _column(r)
+            return np.reshape(pot.energy(q).to_value((u.km / u.s)**2), shape)
+
+        def mass_host(r):
+            shape, q = _column(r)
+            phi_prime = np.ravel(pot.gradient(q)[0])
+            m = (phi_prime * q[0]**2 / G_apy).to_value(u.Msun)
+            return np.reshape(m, shape)
+
+        return phi_host, mass_host, self.m_host_total()
+
+    def m_host_total(self):
+        """Mass available to recoil, in Msun; ``None`` for "effectively infinite".
+
+        The default is ``None``: an extended halo does not translate rigidly, so
+        pinning it to the rotation axis is the right treatment regardless of how
+        much mass it has.  ``KeplerHost`` overrides this, because a point mass
+        has nowhere else to put the momentum.
+        """
+        return None
+
 
 class KeplerHost(_GalaHost):
     """Point-mass (Keplerian) host: Phi(R) = -G M / R."""
@@ -168,6 +222,17 @@ class KeplerHost(_GalaHost):
 
     def nu(self, r_gal_kpc):
         return 3.0
+
+    def m_host_total(self):
+        """M, because a point mass recoils.
+
+        This is the case where the equilateral points are real: the host is the
+        whole of the host's mass, it orbits the barycentre along with the
+        cluster, and ``jacobi_escape.plane_potential_maximum`` returns L4 rather
+        than L3.  Getting it wrong here is a ~1% error in E_crit, all of it in
+        A.
+        """
+        return self.m_galaxy.to_value(u.Msun)
 
 
 class SphericalMW2022Host(_GalaHost):
@@ -197,10 +262,10 @@ class SphericalMW2022Host(_GalaHost):
                 f"{gp.__name__} has renamed or restructured them, and the "
                 f"spherical/flattened split here needs rechecking.  Components "
                 f"found: {sorted(mw.keys())}.")
-        return gp.CCompositePotential(
-            **{k: v
-               for k, v in mw.items()
-               if k not in MW2022_FLATTENED_COMPONENTS})
+        return gp.CCompositePotential(**{
+            k: v
+            for k, v in mw.items() if k not in MW2022_FLATTENED_COMPONENTS
+        })
 
 
 _HOSTS = {"kepler": KeplerHost, "mw2022_sph": SphericalMW2022Host}
