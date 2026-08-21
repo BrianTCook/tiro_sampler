@@ -21,6 +21,17 @@ potential coefficient nu, which weights the radial term of the perturbation
 
     a_pert = (9 eps / 2) [ -zeta (x^2 + y^2) + z^2 - nu x^2 ].
 
+Those (x, y, z) are **unprimed**: the KRIOS convention across this project is
+primed for the host potential (host at r' = 0, cluster centre at
+r'_GC = (R, 0, 0)) and unprimed for the cluster potential (cluster at r = 0),
+so r = r' - r'_GC and everything TIRO computes is a function of r.  Nothing in
+this script needs r' -- the host is fully represented by the two scalars above
+-- but the distinction matters for the two rotations folded into a_pert, which
+are about different axes: the orbital Omega about the host axis, giving the
+tidal -nu x^2 + z^2 part, and the cluster's own spin omega^2 = (1 + zeta)Omega^2
+about the cluster axis, giving the -zeta (x^2 + y^2) part.  ``jacobi_escape``
+sets both out under "Coordinates" and "The centrifugal term".
+
 nu is not a free knob and it is not 3.  ``host_potential`` defines it as
 1 - R Phi''/Phi', and for a spherical host that is identically
 
@@ -76,7 +87,7 @@ from critical_spin import (boundary_jacobi_energy, critical_zeta, l1_radius,
 from host_potential import make_host
 
 _DEFAULT_M_GC = 2.0e5
-_DEFAULT_RHO_0 = 1e3
+_DEFAULT_RHO_0 = 1e2
 _DEFAULT_R_GAL = 10.0
 _DEFAULT_PSI = 3
 # Host galactic potential: "kepler" (point mass, so nu = 3 - dlnM/dlnR = 3
@@ -117,8 +128,25 @@ def calc_external_pe_numba(pos, masses, epsilon, zeta, nu):
     """Per-particle sum of TIRO external perturbation potential m_i * a_pert(r_i).
 
     a_pert = (9*eps/2) * [-zeta*(x^2+y^2) + z^2 - nu*x^2], matching NBody.py's
-    potential_integrand convention (tidal + asynchronous centrifugal piece in
-    the co-rotating frame).
+    potential_integrand convention.  ``pos`` is unprimed (cluster-centred), the
+    only frame this function knows about.
+
+    The three terms are one tide and one centrifugal piece, not two of each:
+    -nu*x^2 + z^2 is the host tide plus the orbital centrifugal term already
+    combined (the y^2 parts of those two cancel exactly along a circular orbit),
+    while -zeta*(x^2+y^2) is the *asynchronous* part of the cluster's own spin,
+    about the cluster axis rather than the host axis.  In physical units the
+    whole perturbing potential is
+
+        Phi_pert(r) = (Omega^2/2) [ -zeta (x^2+y^2) + z^2 - nu x^2 ],
+
+    whose spin term is -(1/2)(omega^2 - Omega^2)(x^2+y^2) with
+    omega^2 = (1+zeta)Omega^2.  a_pert is that same potential in TIRO's units --
+    a*Phi_pert with lengths in King radii, where a is the DF's inverse velocity
+    scale and r_0^2 = 9/(4*pi*a*G*rho_0) (Arditi & Varri 2025, Sec. 2.3) -- and
+    the 9/2 out front is exactly that substitution: a*(Omega^2/2)*r_0^2 =
+    (9/2)*Omega^2/(4*pi*G*rho_0) = 9*eps/2.  The spin term vanishes at zeta = 0,
+    where the cluster is synchronous and there is only one rotation to speak of.
     """
     n = pos.shape[0]
     total = 0.0

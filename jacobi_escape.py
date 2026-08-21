@@ -2,47 +2,104 @@
 """Restricted-three-body escape machinery for an *extended* spherical host.
 
 Shared by ``initial_energy_distributions_jacobi.py`` and
-``plot_distance_vs_energy_jacobi.py``, the physically-motivated counterparts of
-the Giersz-criterion scripts of the same names.  Where those ask whether a star
-clears ``alpha Phi_GC(r_t)`` -- an empirical energy referenced to the cluster
-alone -- these ask the restricted-three-body question directly: can the star
-reach the inner Lagrange point?
+``plot_distance_vs_energy_jacobi.py``, the restricted-three-body counterparts of
+the cluster-only scripts of the same names.  Those apply the Giersz threshold
+``E_GC > alpha Phi_GC(r_t)`` to a star's cluster-frame energy; these ask the
+question that threshold is an approximation to -- can the star reach the inner
+Lagrange point? -- and answer it from the Jacobi integral.  The two are far
+closer than they look, and :func:`escape_energy_scale` sets out exactly how,
+but no ``alpha`` and no other empirical constant appears anywhere below.
 
-Frames and units
-----------------
+Coordinates
+-----------
+The KRIOS convention, shared with ``host_potential``, ``critical_spin`` and
+``generate_ics_for_spinning_clusters``: **primed for the host, unprimed for the
+cluster.**
+
+    r'              host-centred.  The host sits at r' = 0 and the cluster
+                    centre at r'_GC = (R, 0, 0), R = |r'_GC| the galactocentric
+                    radius.  ``pos_host`` in every signature below is r'.
+    r = r' - r'_GC  cluster-centred.  The cluster sits at r = 0, and these are
+                    the (x, y, z) of TIRO's perturbation a_pert.
+
+Which of the two a quantity is written in is not bookkeeping here.  Phi_host is
+a function of |r'| and Phi_GC of |r|, so far so obvious; the one that actually
+bites is the centrifugal term, which is a function of r' and *not* of r.  See
+below.
+
+Units
+-----
 Everything is in the snapshot's units: kpc, km/s, Msun, so G = 4.30091e-6
 kpc (km/s)^2 / Msun and potentials come out in (km/s)^2.
 
-Positions are host-centred, because that is the frame Phi_eff is defined in: the
-centrifugal term is about the rotation axis through the host, not the cluster.
-Velocities are converted to the co-rotating xyz frame, v_rot = v - Omega x r,
-which is the ``v`` of the paper's Eq. (2) -- the frame Phi_eff is static in.
-Callers pass raw inertial (snapshot) velocities and ``rotating_frame_velocity``
-does the conversion.
+The rotating frame
+------------------
+The frame turns with the cluster's instantaneous orbital angular velocity about
+the host,
 
-The rotating frame turns with the cluster's instantaneous orbital angular
-velocity about the host,
-
-    Omega = (r_GC x v_GC) / |r_GC|^2,
+    Omega = (r'_GC x v_GC) / |r'_GC|^2,
 
 which for a circular orbit is exact and for an eccentric one is the osculating
 value -- E_Jacobi is then conserved only to the extent that Omega is slowly
 varying.  That is the standard restricted-three-body caveat and it is the main
 approximation in what follows.
 
-The effective potential and the criterion
------------------------------------------
-At host-centred position r, with the cluster centre at r_GC,
+Velocities are converted to the co-rotating xyz frame, v_rot = v - Omega x r',
+which is the ``v`` of the paper's Eq. (2) -- the frame Phi_eff is static in.
+Callers pass raw inertial (snapshot) velocities and ``rotating_frame_velocity``
+does the conversion.
 
-    Phi_eff(r) = Phi_host(|r|) + Phi_GC(|r - r_GC|) - (1/2) |Omega x r|^2,
+The centrifugal term
+--------------------
+Binney & Tremaine (2008) Sec. 3.3.2, eqs. (3.112)-(3.114): in a frame rotating
+at angular velocity Omega_b a star conserves the Jacobi integral
 
-and the Jacobi energy of a star is measured from the L1 saddle,
+    E_J = (1/2)|v|^2 + Phi_eff(x),   Phi_eff(x) = Phi(x) - (1/2)|Omega_b x x|^2,
 
-    E_J = v^2/2 + Phi_eff(r) - Phi_eff(r_1).
+with **x measured from a point on the rotation axis**.  That last clause is the
+entire content of the primed/unprimed distinction.  The axis of this frame runs
+through the *host* centre -- that is what the cluster orbits -- so the argument
+of the centrifugal term is r', giving
 
-A star's Jacobi constant C = v^2/2 + Phi_eff(r) is conserved, and the
+    Phi_eff(r') = Phi_host(|r'|) + Phi_GC(|r' - r'_GC|) - (1/2)|Omega x r'|^2.
+
+Writing -(1/2)|Omega x r|^2 with the unprimed r is not the same potential
+shifted by a constant; it is a frame rotating about an axis through the
+*cluster*.  With Omega along z and r'_GC = (R, 0, 0) the two differ by
+
+    -(1/2)|Omega x r'|^2 = -(1/2)|Omega x r|^2 - Omega^2 R x - (1/2)Omega^2 R^2,
+
+and the linear piece -Omega^2 R x is precisely the pseudo-potential of the
+cluster's own orbital acceleration -- the term that cancels Phi_host'(R) x and
+makes the cluster centre a free-fall origin.  Drop it and a uniform residual
+force Omega^2 R survives, some 36 times the tidal force nu Omega^2 r_J at the
+saddle for the 5 kpc reference case, and the collinear points stop being
+anywhere near symmetric.
+
+Two centrifugal terms exist in this project and they are about different axes.
+This module carries only the *orbital* one, at Omega about the host axis: KRIOS
+integrates in the inertial frame and its snapshots are inertial, so a cluster's
+own figure rotation lives in the particle velocities rather than in a potential.
+The other is the cluster's *spin*, at omega^2 = (1 + zeta) Omega^2 about the
+cluster axis, and it appears only in TIRO's perturbation, as the
+-zeta (x^2 + y^2) term written in unprimed coordinates (see
+``generate_ics_for_spinning_clusters.calc_external_pe_numba`` and
+``assert_l1_saddle_exists``).  At zeta = 0 the cluster is synchronous, the two
+axes turn at the same rate, and the distinction collapses.
+
+Coriolis has no place in Phi_eff for the reason BT08 give in the same section:
+it acts perpendicular to v and does no work, so it drops out of the Jacobi
+integral -- which is not to say it drops out of the orbits.
+
+The criterion
+-------------
+The Jacobi energy of a star is measured from the L1 saddle at r'_1,
+
+    E_J = (1/2)|v_rot|^2 + Phi_eff(r') - Phi_eff(r'_1).
+
+A star's Jacobi constant C = (1/2)|v_rot|^2 + Phi_eff(r') is conserved, and the
 zero-velocity surface it defines opens at L1, so the star can leave the cluster
-exactly when C >= Phi_eff(r_1).  That is the whole criterion:
+exactly when C >= Phi_eff(r'_1).  That is the whole criterion:
 
     E_J > 0   the star can reach L1 and escape,
     E_J < 0   it is trapped inside a closed zero-velocity surface,
@@ -50,13 +107,13 @@ exactly when C >= Phi_eff(r_1).  That is the whole criterion:
 with no normalisation in between: for a bound star |E_J| is the energy per unit
 mass it still needs to get out, in (km/s)^2.
 
-Referencing to Phi_eff(r_1) is also what makes the arithmetic survive double
+Referencing to Phi_eff(r'_1) is also what makes the arithmetic survive double
 precision: Phi_eff(L1) ~ -1.4e5 (km/s)^2 at 5 kpc is almost entirely the host,
 while every difference that matters is of order 10 (km/s)^2.  Subtracting it
 cancels that common offset.
 
-The tidal radius follows from the same solve as r_t = |r_1 - r_c|, the
-cluster-to-L1 distance.
+The tidal radius follows from the same solve as r_t = |r'_1 - r'_GC|, the
+cluster-to-L1 distance -- i.e. |r| at the saddle, the unprimed radius of L1.
 
 Why the host being extended changes the answer
 ----------------------------------------------
@@ -142,14 +199,21 @@ The right scale is the corotation level U(R) = Phi_h(R) - (1/2)Omega^2 R^2 (see
 
     E_crit = Phi_eff(L1) - U(R) = -(3/2) G m / r_J,
 
-with the 3/2 universal rather than Keplerian -- nu cancels.  U(R) is a genuine
-stationary level of the rotating frame, needs no equilateral assumption, and is
-the circle L4/L5 lie on whenever they exist.  See :func:`escape_energy_scale`
-and :func:`tilde_energy`.
+a two-line result derived in full in :func:`escape_energy_scale`: 1 part the
+cluster's own potential at the saddle, 1/2 part the tide, with nu cancelling
+between them, so the 3/2 is universal over spherical hosts (and over spins --
+it survives nu -> nu + zeta) rather than a Keplerian relic.  The host and the
+spin enter the scale only through r_J.  U(R) is a genuine stationary level of
+the rotating frame, needs no equilateral assumption, and is the circle L4/L5
+lie on whenever they exist.  See :func:`escape_energy_scale` and
+:func:`tilde_energy`.
 
-Do **not** normalise by |Phi_eff(L1)| itself: at ~1.4e5 (km/s)^2 it is almost
-entirely the host potential, so it carries the arbitrary zero point of Phi_h and
-differs between orbital radii for reasons unrelated to escape.
+Two things this scale is not.  It is **not** |Phi_eff(L1)|: at ~1.4e5 (km/s)^2
+that is almost entirely the host potential, so it carries the arbitrary zero
+point of Phi_h and differs between orbital radii for reasons unrelated to
+escape.  And it is **not** the Giersz alpha, even though alpha is built from the
+same 3/2 -- :func:`escape_energy_scale` gives the relation and the reason this
+module keeps the 3/2 bare.
 """
 
 import glob
@@ -317,7 +381,10 @@ def orbital_frequency(r_gc, v_gc):
     """Omega vector of the rotating frame, (km/s)/kpc.
 
     The instantaneous orbital angular velocity of the cluster about the host,
-    ``(r x v) / |r|^2``.  Exact for a circular orbit; osculating otherwise.
+    ``(r'_GC x v_GC) / |r'_GC|^2``.  ``r_gc`` is the cluster's *primed*
+    (host-centred) position, which is what makes this Omega the angular velocity
+    about the host axis rather than about the cluster.  Exact for a circular
+    orbit; osculating otherwise.
     """
     r_gc = np.asarray(r_gc, dtype=float)
     v_gc = np.asarray(v_gc, dtype=float)
@@ -325,7 +392,19 @@ def orbital_frequency(r_gc, v_gc):
 
 
 def centrifugal_potential(pos, omega_vec):
-    """-(1/2) |Omega x r|^2 in (km/s)^2, for host-centred ``pos`` (..., 3)."""
+    """-(1/2)|Omega x r'|^2 in (km/s)^2, for primed ``pos`` (..., 3).
+
+    The centrifugal part of Binney & Tremaine (2008) eq. (3.114), and the one
+    term in Phi_eff whose argument must be the *primed*, host-centred position:
+    the rotation axis of this frame passes through the host, and BT's x is
+    measured from a point on that axis.  Passing cluster-centred positions here
+    silently rotates the frame about the wrong axis -- see "The centrifugal
+    term" in the module docstring for what that costs.
+
+    Only the orbital rotation Omega enters.  A cluster's own spin omega is not
+    represented by any potential in this module; it lives in the inertial
+    particle velocities that :func:`rotating_frame_velocity` is handed.
+    """
     return -0.5 * np.sum(np.cross(np.asarray(pos, dtype=float), omega_vec)**2,
                          axis=-1)
 
@@ -358,8 +437,8 @@ def l1_distance(r_gc_mag, m_cluster, omega_mag):
     """Distance from the cluster centre to L1 (the inner saddle), in kpc.
 
     L1 sits on the host-cluster line where the net radial force in the rotating
-    frame vanishes.  Writing ``s`` for the host-centred radius and
-    ``ell = r_gc_mag - s`` for the distance from the cluster,
+    frame vanishes.  Writing ``s`` for the primed (host-centred) radius |r'| and
+    ``ell = r_gc_mag - s`` for the unprimed distance |r| from the cluster,
 
         F(ell) = G M_host(<s)/s^2 - G m_cluster/ell^2 - Omega^2 s
 
@@ -497,6 +576,11 @@ def l1_effective_potential(r_gc_mag, m_cluster, omega_mag, ell=None):
     The cluster is treated as a point mass here: L1 lies at roughly the tidal
     radius, outside essentially all of the bound mass, so Phi_GC there is
     Keplerian to the same accuracy the criterion itself has.
+
+    Note the two radii in the one expression, and that they are not
+    interchangeable: ``s = r_gc_mag - ell`` is the primed |r'_1| and carries the
+    host and centrifugal terms, while ``ell`` is the unprimed |r_1| and carries
+    the cluster term.
     """
     if ell is None:
         ell = l1_distance(r_gc_mag, m_cluster, omega_mag)
@@ -509,8 +593,10 @@ def l1_effective_potential(r_gc_mag, m_cluster, omega_mag, ell=None):
 def corotation_potential(r_gc_mag, omega_mag):
     """U(R) = Phi_h(R) - (1/2) Omega^2 R^2 in (km/s)^2 -- the corotation level.
 
-    The host-plus-centrifugal effective potential on the cluster's own
-    guiding-centre circle, with the cluster's own term left out.  This is the
+    Phi_eff evaluated at |r'| = R with the cluster's own term left out: the
+    host-plus-centrifugal effective potential on the cluster's own
+    guiding-centre circle.  Dropping the cluster term is what makes it a
+    function of the primed radius alone, hence constant around the circle.  This is the
     replacement for the old L4/L5 reference ``A``, and it is the right one for
     an extended host:
 
@@ -541,21 +627,77 @@ def escape_energy_scale(phi_l1, r_gc_mag, omega_mag):
 
     The depth of the L1 saddle below corotation, and the natural unit of the
     escape problem -- the energy per unit mass a star at the corotation level
-    would have to give up to be trapped inside the L1 neck.
+    would have to give up to be trapped inside the L1 neck.  This is the
+    denominator E_tilde should be normalised by (:func:`tilde_energy`).
 
-    Expanding U about R and using r_J^3 = G m/(nu Omega^2),
+    Where the 3/2 comes from
+    ------------------------
+    Expand Phi_eff about the cluster centre, i.e. rewrite it in the unprimed
+    coordinates of the module docstring, r' = r'_GC + r.  The constant is
+    U(R) = Phi_h(R) - (1/2)Omega^2 R^2 and the linear terms cancel because the
+    orbit is circular (Omega^2 R = Phi_h'(R)), leaving the quadrupole
 
-        Phi_eff(L1) = U(R) - (1/2) nu Omega^2 r_J^2 - G m/r_J
-                    = U(R) - (3/2) G m / r_J,
+        Phi_eff(r') - U(R)
+            = Phi_GC(r) - (1/2) nu Omega^2 x^2 + (1/2) Omega^2 z^2,
 
-    so |E_crit| = (3/2) G m / r_J to O(r_J/R).  The nu cancels between the two
-    terms, which is why the 3/2 is universal rather than Keplerian: it holds for
-    any spherical host.  Verified against the exact solve to 0.1% at 3-10 kpc.
+    with nu Omega^2 = Omega^2 - Phi_h''(R) as everywhere else here.  The y^2
+    coefficient vanishes: the host's transverse compression and the centrifugal
+    term cancel exactly along the orbit.  On the host-cluster axis (y = z = 0),
+    with the cluster a point mass that far out,
 
-    This is the denominator E_tilde should be normalised by.  |Phi_eff(L1)|
-    itself must NOT be used: it is ~1.4e5 (km/s)^2, almost entirely the host
-    potential, so it carries the arbitrary zero-point of Phi_h and varies
-    between orbital radii for reasons that have nothing to do with escape.
+        f(x) = -G m / x - (1/2) nu Omega^2 x^2.
+
+    Two lines finish it.  f'(x) = 0 puts the saddle at
+
+        x^3 = G m / (nu Omega^2) = r_J^3,
+
+    which is the Jacobi radius, and substituting back,
+
+        f(r_J) = -G m/r_J - (1/2)(G m/r_J^3) r_J^2 = -(3/2) G m / r_J.
+
+    So the 3/2 is 1 from the cluster's own potential at the saddle plus 1/2 from
+    the tide, and nu cancels between them: it fixes *where* the saddle sits but
+    not how deep it is.  That is the whole reason the 3/2 is universal over
+    spherical hosts rather than Keplerian, and why the host enters this scale
+    only through r_J.
+
+    The same algebra with nu -> nu + zeta covers a cluster spinning
+    asynchronously at omega^2 = (1 + zeta)Omega^2, whose axial coefficient is
+    -(nu + zeta)x^2 (see
+    ``generate_ics_for_spinning_clusters.assert_l1_saddle_exists``): its saddle
+    moves to r_J(nu + zeta) and is again 3/2 G m deep over it.  Neither the host
+    profile nor the spin touches the 3/2.
+
+    Accuracy.  What this function returns is the *exact* Phi_eff(L1) - U(R) built
+    from the solved saddle, not the expansion above; the expansion is the
+    argument, not the implementation.  For m = 2e5 Msun the two agree to 0.22%,
+    0.13%, 0.09% and 0.08% at R = 3, 5, 8 and 10 kpc, the residual being the
+    O(r_J/R) the expansion drops.  ``python -m jacobi_escape`` prints that
+    comparison as its second table, alongside r_J/R for the residual to track.
+
+    Relation to the Giersz threshold
+    --------------------------------
+    The cluster-only scripts strip a star when its cluster-frame energy clears
+    alpha Phi_GC(r_t) = -alpha G m / r_t, with
+
+        alpha = 1.5 - (ln Lambda / N)^(1/4)    (Giersz, Heggie & Hurley 2008)
+
+    That is the same quantity as the scale here, not a rival convention: take
+    alpha to its N -> infinity limit of 3/2 and r_t to the force-balance r_J,
+    and -alpha G m/r_t is exactly E_crit = -(3/2) G m / r_J.  Giersz's alpha *is*
+    the L1 saddle depth, less an empirical N-dependent correction for the fact
+    that a star at the threshold needs a finite time to find the neck.  At the
+    resolutions in play the correction is a few per cent: alpha = 1.4396 at
+    N = 1e6 and 1.3976 at N = 1e5, for gamma = 0.6.
+
+    This module keeps the bare 3/2 and does not offer alpha as an option.  Alpha
+    is a rate correction in the shape of an energy -- it depends on N and on the
+    Coulomb-log fudge gamma -- so normalising by it would make a figure's energy
+    axis depend on the particle count of the run rather than on its dynamics,
+    and would place the same star at two different E_tilde in two resolutions of
+    the same cluster.  The 3/2 depends on nothing.  Where the Giersz criterion
+    is named elsewhere in this project it is those scripts' criterion being
+    described; it is never a normalisation used here.
     """
     return abs(float(phi_l1) - corotation_potential(r_gc_mag, omega_mag))
 
@@ -570,11 +712,15 @@ def load_tidal_radius(radii_info_csv):
     the same scale: for a spherical host the leading eigenvalue of the effective
     tidal tensor is nu Omega^2, so lambda1_eff plays the role of the
     Omega^2 - Phi'' in :func:`jacobi_radius`.  It is not the
-    restricted-three-body result, though -- the ``-(lambda2+lambda3)/2``
-    construction folds a rotational contribution into the eigenvalues as a proxy
-    for the centrifugal term, and it is built from the host tensor alone, so it
-    is blind to the cluster's own shape.  It agrees with :func:`l1_distance` to
-    ~0.05%.
+    restricted-three-body result, though.  The ``-(lambda2+lambda3)/2`` term is
+    how the construction recovers the centrifugal contribution without being
+    told Omega: for a circular orbit in a *spherical* host the two transverse
+    eigenvalues are both -Phi'(R)/R = -Omega^2, so -(lambda2+lambda3)/2 = Omega^2
+    and lambda1_eff = -Phi'' + Omega^2 = nu Omega^2 exactly, reproducing the
+    centrifugal term rather than approximating it.  Away from sphericity or
+    circularity it becomes the proxy it is usually described as.  Either way it
+    is built from the host tensor alone, so it is blind to the cluster's own
+    shape.  It agrees with :func:`l1_distance` to ~0.05%.
 
     UNITS: with ``IO_IN_PHYSICAL_UNITS=true`` (all the spinning_gcs runs) ``t``
     is in Myr and every radius column is in **pc**, while this module works in
@@ -671,7 +817,14 @@ def escape_reference(r_gc, v_gc, m_cluster, ell=None):
 
 
 def effective_potential(pos_host, phi_cluster, omega_vec):
-    """Phi_eff at host-centred positions, given the cluster potential there.
+    """Phi_eff at primed positions r', given the cluster potential there.
+
+        Phi_eff(r') = Phi_host(|r'|) + Phi_GC(|r|) - (1/2)|Omega x r'|^2
+
+    -- primed argument for the host and centrifugal terms, unprimed for the
+    cluster, exactly as in the module docstring.  ``pos_host`` is r'; the
+    unprimed r never appears explicitly because ``phi_cluster`` arrives already
+    evaluated at it.
 
     ``phi_cluster`` is the *specific* cluster potential at each position, in
     (km/s)^2 -- from KRIOS's SCF column for snapshots, or from the IC's own
@@ -684,7 +837,11 @@ def effective_potential(pos_host, phi_cluster, omega_vec):
 
 
 def rotating_frame_velocity(vel_inertial, pos_host, omega_vec):
-    """Velocity in the co-rotating xyz frame: ``v_inertial - Omega x r``.
+    """Velocity in the co-rotating xyz frame: ``v_inertial - Omega x r'``.
+
+    Primed again, and for the same reason the centrifugal term is: the frame
+    turns about the host axis, so the transport velocity of the frame at a point
+    is Omega x r' and not Omega x r.
 
     This is the ``v`` of the paper's Eq. (2) -- the speed in the frame Phi_eff
     is static in.  It is not the same as the cluster-centric velocity
@@ -698,7 +855,7 @@ def rotating_frame_velocity(vel_inertial, pos_host, omega_vec):
 
 
 def jacobi_energy(pos_host, vel_inertial, phi_cluster, omega_vec, phi_l1):
-    """E_J = v^2/2 + Phi_eff(r) - Phi_eff(L1), in (km/s)^2.
+    """E_J = (1/2)|v_rot|^2 + Phi_eff(r') - Phi_eff(r'_1), in (km/s)^2.
 
     ``phi_l1`` is the L1 effective potential from :func:`escape_reference`.
     Subtracting it is part of the definition, not a normalisation applied
@@ -719,7 +876,8 @@ def tilde_energy(e_jacobi_a, e_crit):
     """E_tilde = (E_J - E_crit)/|E_crit|, the paper's Eq. (3).
 
     ``e_jacobi_a`` must be the **A-referenced** Jacobi energy,
-    v^2/2 + Phi_eff(r) - U(R).  ``e_crit`` is Phi_eff(L1) - U(R), negative.
+    (1/2)|v_rot|^2 + Phi_eff(r') - U(R).  ``e_crit`` is Phi_eff(L1) - U(R),
+    negative.
 
     Passing the L1-referenced E_J that :func:`jacobi_energy` returns instead
     yields E_tilde - 1: the two zero points differ by exactly E_crit.  That is
@@ -759,6 +917,20 @@ def circular_frequency(r_gal):
     return np.sqrt(NEWTON_G * galaxy_enclosed_mass(r_gal) / r_gal**3)
 
 
+def giersz_alpha(n_star=1_000_000, gamma=0.6):
+    """alpha = 1.5 - (ln(gamma N)/N)^(1/4), Giersz, Heggie & Hurley (2008).
+
+    Provided for the comparison :func:`escape_energy_scale` documents and
+    ``_report`` prints, and for nothing else: **no escape criterion in this
+    module uses it.**  It is the cluster-only scripts' threshold constant, an
+    N- and gamma-dependent correction to the same 3/2 that
+    :func:`escape_energy_scale` derives from the L1 saddle, and normalising by
+    it would tie an energy axis to a run's particle count.  See that function's
+    "Relation to the Giersz threshold".
+    """
+    return 1.5 - (np.log(gamma * n_star) / n_star)**0.25
+
+
 def _report(m_cluster=2.0e5, radii=(1.0, 3.0, 5.0, 8.0, 10.0, 20.0)):
     """Print the Lagrange-point structure of this host, for eyeballing.
 
@@ -791,6 +963,29 @@ def _report(m_cluster=2.0e5, radii=(1.0, 3.0, 5.0, 8.0, 10.0, 20.0)):
           "compare\nhost_potential.nu(R) (gala-derived) against the nu column.")
     print("The L4/L5 column is 'none' wherever (M_tot + m)/M(<R) > 8; with the "
           "halo\nuntruncated M_tot diverges and they never exist.")
+
+    # The energy scale, and the 3/2 that escape_energy_scale derives: the last
+    # column is the only claim in that docstring not already a column above.
+    header = ("  R    |E_crit|   (3/2)Gm/r_J   ratio    r_J/R    "
+              "Giersz -alpha Gm/r_J")
+    print("\n" + header)
+    print(f"{'kpc':>4}  {'(km/s)^2':>8}   {'(km/s)^2':>8}   "
+          f"{'exact/exp':>9} {'':>8} {'N = 1e6, gam = 0.6':>18}")
+    print("-" * len(header))
+    for r in radii:
+        omega = float(circular_frequency(r))
+        r_j = jacobi_radius(r, m_cluster)
+        phi_l1, _ = l1_effective_potential(r, m_cluster, omega)
+        exact = escape_energy_scale(phi_l1, r, omega)
+        expansion = 1.5 * NEWTON_G * m_cluster / r_j
+        giersz = giersz_alpha() * NEWTON_G * m_cluster / r_j
+        print(f"{r:5.1f} {exact:9.4f} {expansion:12.4f} "
+              f"{exact / expansion:9.5f} {r_j / r:8.5f} {giersz:16.4f}")
+    print("\nThe ratio column is the O(r_J/R) the (3/2) G m / r_J expansion "
+          "drops; it\ntracks the r_J/R column, as it should.  The last column "
+          "is what normalising\nby the Giersz alpha instead of the bare 3/2 "
+          "would give -- a few per cent, and\nN-dependent, which is why "
+          "escape_energy_scale keeps the 3/2.")
 
 
 if __name__ == "__main__":

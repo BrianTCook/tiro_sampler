@@ -14,7 +14,7 @@ from scipy.spatial import cKDTree
 
 from host_potential import make_host
 
-BASE_DIR = "/home/btcook/Desktop/spinning_gcs_paper/aug18_tiro_ics_subdir/" #os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = "/home/btcook/Desktop/spinning_gcs_paper/aug19_tiro_ics_subdir/" #os.path.dirname(os.path.abspath(__file__))
 
 _M_GC = 2.0e5 * u.Msun
 

@@ -8,11 +8,27 @@ cluster's galactocentric radius R:
   * nu(R)      = 1 - R Phi''(R) / Phi'(R)    -- radial tidal anisotropy.
 
 nu is the "galactic potential coefficient" (TIRO Model param[3]); it sets the
-radial (x, toward the galactic centre) tidal term in the perturbation
+radial tidal term in the perturbation
     a_pert = (9 eps / 2) [ -zeta (x^2 + y^2) + z^2 - nu x^2 ],
 and the tidal strength is eps = Omega^2 / (4 pi G rho_0). Working through the
 co-rotating effective potential to quadrupole order gives nu = 1 - Phi''/Omega^2,
 which reduces to nu = 3 for a Kepler point mass.
+
+Coordinates follow the KRIOS convention throughout this project: primed for the
+host potential, unprimed for the cluster potential. The host sits at r' = 0, the
+cluster centre at r'_GC = (R, 0, 0), and the (x, y, z) of a_pert above are the
+unprimed r = r' - r'_GC, so +x runs along the host-cluster axis away from the
+galactic centre and z along the orbital angular momentum. a_pert is even in each
+of x, y and z, so the two collinear saddles are degenerate at this order and the
+sign of x is immaterial; the degeneracy is broken only at O(r_J/R), by the third
+derivative d^3Phi/dR^3 that the quadrupole truncation drops (see
+``jacobi_escape.l2_distance``).
+
+Two rotations enter, about two different axes, and nu concerns only the first:
+the orbital Omega about the host axis, which together with the tide produces the
+-nu x^2 + z^2 part of a_pert, and the cluster spin omega^2 = (1 + zeta) Omega^2
+about the cluster axis, which produces the -zeta (x^2 + y^2) part.
+``jacobi_escape`` sets the two out in full under "The centrifugal term".
 
 Two hosts are provided:
   * KeplerHost          -- point mass; nu = 3 exactly, Omega^2 = G M / R^3.
@@ -76,8 +92,9 @@ class _GalaHost:
     def _radial_derivatives(self, r_gal_kpc):
         """``(Phi'(R), Phi''(R))`` as Quantities, for scalar or array R [kpc].
 
-        Evaluated on the +x axis, where for a spherical host the radial
-        derivatives are the xx components of gala's gradient and Hessian.
+        Evaluated on the +x' axis (the host-centred frame, cluster at
+        r' = (R, 0, 0)), where for a spherical host the radial derivatives are
+        the x'x' components of gala's gradient and Hessian.
         """
         r = np.atleast_1d(u.Quantity(r_gal_kpc, u.kpc))
         q = np.zeros((3, r.size)) * u.kpc
@@ -107,12 +124,21 @@ class _GalaHost:
         """Largest eigenvalue lambda_1 [1/s^2] of the effective (co-rotating)
         tidal tensor at galactocentric radius R, from gala.
 
-        Placing the cluster at (R, 0, 0), the effective tidal tensor is
-            T_ij = -d^2Phi/dx_i dx_j + Omega^2 diag(1, 1, 0),
-        with Omega^2 = (dPhi/dR)/R the circular frequency (the centrifugal
-        term acts in the orbital plane). Its largest eigenvalue sets the
-        generalised Jacobi radius r_J = (G M_GC / lambda_1)^(1/3). For a
-        spherical host lambda_1 reduces to nu Omega^2.
+        Placing the cluster at r' = (R, 0, 0), the effective tidal tensor is
+            T_ij = -d^2Phi/dx'_i dx'_j + Omega^2 diag(1, 1, 0),
+        with Omega^2 = (dPhi/dR)/R the circular frequency. The added term is the
+        curvature of the *orbital* centrifugal potential -(1/2)|Omega x r'|^2,
+        hence diag(1, 1, 0): flat along the rotation axis, and about the host
+        axis rather than the cluster's, so it is a property of where the cluster
+        sits rather than of how fast it spins. The cluster spin does not appear
+        here at all; it enters downstream as zeta.
+
+        The largest eigenvalue sets the generalised Jacobi radius
+        r_J = (G M_GC / lambda_1)^(1/3). For a spherical host the Hessian is
+        diag(Phi'', Omega^2, Omega^2), so T = Omega^2 diag(nu, 0, -1) and
+        lambda_1 = nu Omega^2 exactly -- which is the identity
+        ``generate_ics_for_spinning_clusters.host_tidal_diagnostics`` checks by
+        reporting the ratio.
         """
         pot = self.gala_potential()
         q = [r_gal_kpc, 0.0, 0.0] * u.kpc
