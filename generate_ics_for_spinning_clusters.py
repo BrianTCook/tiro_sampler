@@ -54,6 +54,18 @@ search to find.  A satellite there is tidally protected rather than stripped,
 so it is refused up front rather than left to fail inside brentq; see
 :func:`assert_tidal_field_shears`.
 
+Outputs, per realisation
+------------------------
+``particles.csv``          the KRIOS input.  Fixed, headerless column layout;
+                           nothing may be added to it.
+``particle_energies.csv``  per-particle escape diagnostics -- id, the same
+                           Henon coordinates, E_J and two normalised forms of
+                           it.  See
+                           :meth:`TiroInitialConditionSampler._jacobi_energies`.
+``parameters.csv``,        the model's inputs and its derived physical scales,
+``physical_units.csv``     including the constants the E_tilde columns are
+                           divided by.
+
 This supersedes generate_ics_at_fixed_zeta.py, a clone of this script that
 carried only the --zeta half.
 """
@@ -85,6 +97,7 @@ from TIRO import Model
 from critical_spin import (boundary_jacobi_energy, critical_zeta, l1_radius,
                            tidal_strength)
 from host_potential import make_host
+from jacobi_escape import giersz_alpha
 
 _DEFAULT_M_GC = 2.0e5
 _DEFAULT_RHO_0 = 1e2
@@ -104,6 +117,12 @@ _DEFAULT_ZETA = -1.0
 # by a fraction of a percent keeps the model maximally spinning *and* verifiably
 # bound. Set to 1.0 to sit exactly on the critical curve (the check will fail).
 _ZETA_SAFETY = 0.99
+# gamma of the Coulomb logarithm ln Lambda = ln(gamma N) in the Giersz, Heggie &
+# Hurley (2008) alpha, used only for the comparison column in
+# particle_energies.csv.  Matches _GAMMA in
+# ../krios_python/python_scripts/initial_energy_distributions.py, so the two
+# pipelines normalise the same way; nothing in the sampling depends on it.
+_GIERSZ_GAMMA = 0.6
 
 
 @njit(parallel=True, fastmath=True)
@@ -771,6 +790,18 @@ class TiroInitialConditionSampler:
             print("  -> Sampling velocities from distribution function...")
         self._sample_velocities()
 
+        # Before the rescale: it mutates self.pos and self.vel in place, and
+        # the energies are built from the sampled TIRO-unit quantities anyway.
+        self.energies = self._jacobi_energies()
+
+        if self.verbose:
+            e_t = self.energies["E_tilde"]
+            n_pos = int(np.count_nonzero(self.energies["E_J_kms2"] > 0.0))
+            print(f"      max E_J = "
+                  f"{self.energies['E_J_kms2'].max():+.4f} (km/s)^2, "
+                  f"max E_tilde = {e_t.max():+.4f}, "
+                  f"{n_pos} particle(s) with E_J > 0")
+
         if self.verbose:
             print("  -> Rescaling to Henon units...")
         self._rescale_to_henon_units()
@@ -849,6 +880,13 @@ class TiroInitialConditionSampler:
             v_final[indices] = v_c[accept]
             resample[indices] = False
 
+        # The co-rotating (omega-frame) speed, kept because it -- not the
+        # inertial velocity written to particles.csv -- is the ``v`` of the
+        # Jacobi integral the DF is built on.  ``_jacobi_energies`` needs it and
+        # cannot recover it after ``_rescale_to_henon_units`` scales positions
+        # and velocities by different factors.
+        self.v_cr_dimless = v_final
+
         cos_t = self.rng.uniform(-1.0, 1.0, self.n)
         theta = np.arccos(cos_t)
         phi = self.rng.uniform(0.0, 2.0 * np.pi, self.n)
@@ -882,6 +920,146 @@ class TiroInitialConditionSampler:
         vel[:, 1] = vy_cr + self.omega_vel_units * self.pos[:, 0]
         vel[:, 2] = vz_cr
         self.vel = vel
+
+    def _jacobi_energies(self):
+        """Per-particle Jacobi energy and its two normalised forms.
+
+        Returns a dict of ``(n,)`` arrays -- ``E_J_kms2``, ``E_tilde``,
+        ``E_tilde_giersz`` -- and records the scalars each was divided by in
+        ``self.phys``.  Written to ``particle_energies.csv``; nothing here
+        touches ``particles.csv``, which stays exactly as KRIOS expects it.
+
+        The energy
+        ----------
+        This is ``critical_spin``'s criterion evaluated at every star instead of
+        only at the model's edge, so the two cannot disagree.  That module's
+        identity is Phi_eff = -psi/a up to an additive constant, hence for a
+        star at radius r with co-rotating speed v,
+
+            a E_J = (1/2) v_hat^2 - psi(r) + psi(r_L1),
+
+        the constant cancelling between the two psi terms.  ``self.p_psi`` is
+        psi(r) per particle from the position sampling and
+        ``self.v_cr_dimless`` is v_hat from the velocity sampling, so no new
+        integration is needed; dividing by a = ``vel_scale_inv_kms`` puts it in
+        (km/s)^2.
+
+        Two things about the frame, both of which follow the project's
+        primed/unprimed convention (see ``jacobi_escape``).  The velocity is the
+        **co-rotating** one, in the frame turning at the cluster's own spin
+        omega about the cluster axis -- that is the frame TIRO's DF is built in,
+        and it is *not* the inertial velocity written to particles.csv, which
+        has omega x r added back.  And the radius is unprimed: psi is a function
+        of the cluster-centred r, with the host entering only through the
+        perturbation already folded into it.
+
+        Sign convention: E_J > 0 means the star can reach L1 and leave.  Every
+        particle sampled from a sub-critical model has E_J < 0 identically,
+        because the DF is sampled with v_hat <= v_esc = sqrt(2 psi), so
+        (1/2)v_hat^2 - psi <= 0 and therefore E_J <= psi(r_L1), which is the
+        ``boundary_jacobi_energy`` that ``assert_jacobi_surface_closed`` has
+        already checked is negative.  The file is therefore a consistency check
+        and a distribution of how close the tail sits to the saddle, not an
+        escaper census -- a positive value in it means the criticality check was
+        bypassed with --allow_supercritical.
+
+        The two normalisations
+        ----------------------
+        Both are the same E_J over a different constant, so they differ by one
+        per-model factor and not per particle:
+
+            E_tilde        = E_J / |E_crit|,     |E_crit| = (3/2) G M_GC / r_L1
+            E_tilde_giersz = E_J / |E_giersz|,   |E_giersz| = alpha G M_GC / r_t
+
+        ``E_tilde`` is the L1 saddle depth of ``jacobi_escape.escape_energy_scale``,
+        evaluated at this model's own r_L1 rather than at the leading-order
+        r_J(nu + zeta) they agree with to 0.03%.  It depends on nothing but the
+        cluster mass and that radius.
+
+        ``E_tilde_giersz`` is the same E_J over the Giersz, Heggie & Hurley
+        (2008) energy *scale*, with alpha = 1.5 - (ln(gamma N)/N)^(1/4) and
+        r_t the truncation radius -- which is what those scripts mean by r_t
+        ("the largest particle radius in the file"), and where Phi_GC(r_t) is
+        exactly -G M_GC/r_t because all of the mass is inside.  It is offered
+        for comparison with that pipeline and for nothing else, and the reason
+        is worth being concrete about: alpha is a function of N, taking the
+        values
+
+            N       2e3     1e4     1e5     1e6     1e7
+            alpha   1.256   1.328   1.398   1.440   1.465
+
+        at gamma = 0.6, so the *same physical cluster* realised at 2e3 and 1e6
+        particles gets energy axes differing by 15%, while its dynamics are
+        identical.  ``E_tilde`` does not move.  N here is ``self.n``, the number
+        actually written, which for these ICs is the number KRIOS will
+        integrate; ``giersz_n``, ``giersz_gamma``, ``giersz_alpha`` and both
+        scale factors all go into physical_units.csv, so either axis can be
+        recovered or renormalised to a different N after the fact.
+
+        Note the two radii are not the same one: r_L1 is the saddle and r_t the
+        model's edge, so the ratio between the columns is
+        alpha r_L1 / (1.5 r_t), not alpha/1.5.  For the reference models r_L1
+        exceeds r_t, which is what "tidally underfilling" means.
+
+        What ``E_tilde_giersz`` is NOT
+        ------------------------------
+        It is not the Giersz *criterion*, and the difference is not pedantic.
+        That criterion is a statement about a different energy in a different
+        frame -- E_GC = (1/2)v^2 + Phi_GC(r) with v in the cluster's centre-of-
+        mass frame and no host term at all -- tested against alpha Phi_GC(r_t).
+        Borrowing alpha Phi_GC(r_t) as a unit for E_J, which is what this column
+        does, changes the axis and nothing else.
+
+        So the anchors here are **not** those of
+        ``../krios_python/python_scripts/initial_energy_distributions.py``.
+        There the energy is E_GC, the Giersz boundary sits at e = -1 and e = 0
+        means formally unbound.  In both columns of this file the threshold is
+        at zero, because the zero point comes from Phi_eff(L1) and is untouched
+        by the choice of denominator:
+
+            E_tilde = 0   the star can reach L1 and leave
+            E_tilde = 1   it can reach the corotation level
+
+        Applying that script's ``e > -1`` cut to a column of this one would be
+        meaningless.  Comparing the two criteria means computing E_GC as well,
+        which is that script's job, not this one's.
+        """
+        # l1_radius rather than self.r_tidal_dimless, which is None for a model
+        # sampled under --allow_supercritical.  The saddle exists either way --
+        # what fails above zeta_crit is the surface closing around it, not the
+        # solve -- and that is exactly the case whose E_J is worth looking at.
+        r_l1_dimless = (self.r_tidal_dimless if self.r_tidal_dimless is not None
+                        else l1_radius(self.model))
+        psi_l1 = boundary_jacobi_energy(self.model, r_l1=r_l1_dimless)
+
+        e_j_dimless = 0.5 * self.v_cr_dimless**2 - self.p_psi + psi_l1
+        e_j_kms2 = e_j_dimless / self.phys["vel_scale_inv_kms"]
+
+        m_gc = self.phys["m_gc_phys_msun"] * u.Msun
+        r_l1_pc = r_l1_dimless * self.r_king.value
+        r_trunc_pc = self.phys["r_trunc_pc"]
+
+        e_crit = float((1.5 * G_apy * m_gc / (r_l1_pc * u.pc)).to_value(
+            (u.km / u.s)**2))
+        alpha = giersz_alpha(self.n, _GIERSZ_GAMMA)
+        e_giersz = float((alpha * G_apy * m_gc / (r_trunc_pc * u.pc)).to_value(
+            (u.km / u.s)**2))
+
+        self.phys.update({
+            "psi_l1": psi_l1,
+            "r_l1_used_pc": r_l1_pc,
+            "e_crit_kms2": e_crit,
+            "e_crit_giersz_kms2": e_giersz,
+            "giersz_alpha": alpha,
+            "giersz_gamma": _GIERSZ_GAMMA,
+            "giersz_n": self.n,
+        })
+
+        return {
+            "E_J_kms2": e_j_kms2,
+            "E_tilde": e_j_kms2 / e_crit,
+            "E_tilde_giersz": e_j_kms2 / e_giersz,
+        }
 
     def _rescale_to_henon_units(self):
         # Self-gravity PE (per-pair ~ 1/r, so rescales as 1/A under pos *= A).
@@ -1034,6 +1212,30 @@ class TiroInitialConditionSampler:
             delimiter=", ",
             fmt="%.12f",
         )
+
+        # Escape diagnostics, deliberately a separate file: particles.csv is
+        # read by KRIOS and its column layout is fixed, so nothing may be added
+        # to it.  Coordinates here are the same Henon-unit values in the same
+        # row order, so "id" joins the two files and a row-order bug shows up as
+        # a coordinate mismatch rather than silently misattributing energies.
+        # The two files round differently -- "%.12f" there against "%.12g" here
+        # -- so a correct join agrees to ~5e-12 rather than bit-for-bit; a real
+        # mismatch is O(1) and cannot be confused with that.
+        # See _jacobi_energies for what the three energy columns mean.
+        pd.DataFrame({
+            "id": df_particles["id"],
+            "x": self.pos[:, 0],
+            "y": self.pos[:, 1],
+            "z": self.pos[:, 2],
+            "vx": self.vel[:, 0],
+            "vy": self.vel[:, 1],
+            "vz": self.vel[:, 2],
+            "E_J_kms2": self.energies["E_J_kms2"],
+            "E_tilde": self.energies["E_tilde"],
+            "E_tilde_giersz": self.energies["E_tilde_giersz"],
+        }).to_csv(self.out_dir / "particle_energies.csv",
+                  index=False,
+                  float_format="%.12g")
 
 
 def main():
