@@ -3,12 +3,12 @@
 
 Shared by ``initial_energy_distributions_jacobi.py`` and
 ``plot_distance_vs_energy_jacobi.py``, the restricted-three-body counterparts of
-the cluster-only scripts of the same names.  Those apply the Giersz threshold
-``E_GC > alpha Phi_GC(r_t)`` to a star's cluster-frame energy; these ask the
-question that threshold is an approximation to -- can the star reach the inner
-Lagrange point? -- and answer it from the Jacobi integral.  The two are far
-closer than they look, and :func:`escape_energy_scale` sets out exactly how,
-but no ``alpha`` and no other empirical constant appears anywhere below.
+the cluster-only scripts of the same names.  Where those test a star's
+cluster-frame energy against an empirically calibrated boundary, these ask the
+dynamical question directly -- can the star reach the inner Lagrange point? --
+and answer it from the Jacobi integral.  No empirical constant, and no
+leading-order stand-in for one, appears anywhere below: every scale here is a
+difference of Phi_eff values evaluated at points that are solved for.
 
 Coordinates
 -----------
@@ -29,8 +29,9 @@ below.
 
 Units
 -----
-Everything is in the snapshot's units: kpc, km/s, Msun, so G = 4.30091e-6
-kpc (km/s)^2 / Msun and potentials come out in (km/s)^2.
+Everything is in the snapshot's units: kpc, km/s, Msun, so
+G = 4.3009173e-6 kpc (km/s)^2 / Msun -- astropy's CODATA value, shared with
+every other G in this project -- and potentials come out in (km/s)^2.
 
 The rotating frame
 ------------------
@@ -180,50 +181,111 @@ the triangular points are absent, and were the orbit wide enough for them to
 exist they would not be equilateral.  A live halo would not admit them in any
 case (it deforms and exerts dynamical friction rather than translating rigidly).
 
-The energy scale, and what replaces A
--------------------------------------
-Earlier versions of this module subtracted A = max[Phi_eff(z = 0)], *asserted* to
-sit at equilateral L4/L5 points.  Those coordinates are not equilibria of this
-Phi_eff -- they are not equilibria of any extended-host Phi_eff -- so A was a
-number read off a dynamically meaningless position.
+The reference level A, and E_tilde
+----------------------------------
+The dimensionless Jacobi integral is Weatherford et al. (2024),
 
-The zero point does not need A at all: E_J here is measured from Phi_eff(L1), so
-the escape threshold is fixed at zero by construction and the unit is (km/s)^2.
-A only ever set the *scale*, because it cancels from the numerator of the
-normalised coordinate:
+    E_tilde = (E_J - E_crit)/|E_crit|,
+    E_J     = (1/2)|v_rot|^2 + Phi_eff(r') - A,
+    E_crit  = Phi_eff(r'_L1) - A,
+    A       = max[Phi_eff(z' = 0)],
 
-    E_tilde = (E_J^A - E_crit)/|E_crit| = E_J^L1 / |E_crit|.
+with the maximum taken over the orbital plane through the host.  The anchors are
 
-The right scale is the corotation level U(R) = Phi_h(R) - (1/2)Omega^2 R^2 (see
-:func:`corotation_potential`), giving
+    E_tilde = 0   E_J = E_crit: the star can reach L1 and leave,
+    E_tilde = 1   E_J = 0:      it can reach the A level itself.
 
-    E_crit = Phi_eff(L1) - U(R) = -(3/2) G m / r_J,
+**How A is evaluated here.**  The usual shortcut is to assert that the maximum
+sits at the equilateral L4/L5 points and to evaluate Phi_eff there.  Sometimes
+that is right and sometimes it is not, and which case you are in depends on the
+host, so :func:`plane_potential_maximum` does not assume a location at all: it
+grids Phi_eff over the z' = 0 plane and refines the best cell with a local
+optimiser.  Brute force costs about a second, it is the definition rather than a
+proxy for it, and it cannot be wrong about a geometry it never assumed.
 
-a two-line result derived in full in :func:`escape_energy_scale`: 1 part the
-cluster's own potential at the saddle, 1/2 part the tide, with nu cancelling
-between them, so the 3/2 is universal over spherical hosts (and over spins --
-it survives nu -> nu + zeta) rather than a Keplerian relic.  The host and the
-spin enter the scale only through r_J.  U(R) is a genuine stationary level of
-the rotating frame, needs no equilateral assumption, and is the circle L4/L5
-lie on whenever they exist.  See :func:`escape_energy_scale` and
-:func:`tilde_energy`.
+**Where the maximum turns out to be** depends on one thing: whether the host
+recoils.  The host's displacement from the rotation axis produces a tangential
+force of order G m/d^2 -- the same order as the cluster's own, and independent
+of the host mass (:func:`barycentre_fraction` has the arithmetic).  So this is
+not a detail that washes out for small mass ratios; it decides whether there are
+any off-axis equilibria at all.
 
-Two things this scale is not.  It is **not** |Phi_eff(L1)|: at ~1.4e5 (km/s)^2
-that is almost entirely the host potential, so it carries the arbitrary zero
-point of Phi_h and differs between orbital radii for reasons unrelated to
-escape.  And it is **not** the Giersz alpha, even though alpha is built from the
-same 3/2 -- :func:`escape_energy_scale` gives the relation and the reason this
-module keeps the 3/2 bare.
+  *Host pinned to the rotation axis* (``m_host_total=None``, the default, and
+  the right choice for an extended live halo, which deforms rather than
+  translating).  Phi_host and the centrifugal term are then both axisymmetric
+  about the origin and contribute nothing azimuthally, so the only tangential
+  force is the cluster's and it vanishes only at phi = 0, pi.  **Every**
+  stationary point of Phi_eff on the plane is collinear.  Since Phi_eff ->
+  -infinity at the cluster and (for nu > 0) outward, the interior maximum is one
+  of L1, L2, L3, and L3 -- roughly 2R from the cluster rather than r_J -- is the
+  highest.  The search returns phi_max = 180 degrees, matching the independent
+  1-D solve of :func:`l3_radius` to ~1e-10 (km/s)^2, and
+
+      A = Phi_eff(L3) = U(R) - G m/(2R),
+
+  with U(R) = Phi_h(R) - (1/2)Omega^2 R^2 the corotation level
+  (:func:`corotation_potential`).
+
+  *Host recoiling* (``m_host_total`` given; the right choice for a point-mass
+  host, which has nowhere else to put the momentum).  This is the textbook
+  restricted three-body problem and the triangular points are back: the search
+  returns the **exact equilateral L4**, reproducing its angle to ~1e-6 degrees
+  and its radius to nine significant figures at every mass ratio from
+  m/M = 1e-5 to 0.5.  For small m/M that is phi_max -> 60 degrees and
+  A = Phi_eff(L4), the reference now sitting a distance R from the cluster
+  rather than 2R.  No tidy A-minus-U(R) form is quoted for this case, because
+  U(R) is itself measured from the rotation axis and so moves with mu as well;
+  the two shifts are the same order and the difference is not the clean
+  G m/(2R) of the pinned case.  E_crit is exact regardless -- it is
+  Phi_eff(L1) - A with both terms solved for, and ``python -m jacobi_escape``
+  checks that identity rather than any of these analytic forms.
+
+Getting this wrong is a ~1% error in E_crit, all of it in A -- L1 is unmoved,
+being displaced from the cluster by r_J rather than by O(m/M) R.  Note that the
+closed form of :func:`triangular_point_angle` tracks the brute force only in the
+small-m limit; the search does not depend on it, which is the point.
+
+Either way,
+
+    E_crit = Phi_eff(L1) - A,
+
+which is the *only* energy scale this module defines.  Both terms in it are
+solved for -- the saddle by the exact force balance of :func:`l1_distance`, the
+maximum by the plane search -- so E_crit needs no expansion, no calibration and
+no assumption about L4/L5, and there is deliberately no leading-order stand-in
+offered as an alternative to normalise by.  The analytic forms above are here to
+make the number interpretable and to give :func:`_report` something to check
+against; nothing computes with them.
+
+Do **not** normalise by |Phi_eff(L1)| itself: at ~1.4e5 (km/s)^2 it is almost
+entirely the host potential, so it carries the arbitrary zero point of Phi_h and
+differs between orbital radii for reasons unrelated to escape.  A is safe from
+that because it enters only as a difference, in E_J and E_crit alike.
 """
 
 import glob
 import os
 
 import numpy as np
-from scipy.optimize import brentq
+from astropy import units as u
+from astropy.constants import G as _G_astropy
+from scipy.optimize import brentq, minimize
 
 # kpc (km/s)^2 / Msun -- positions in kpc, velocities in km/s, masses in Msun.
-NEWTON_G = 4.30091e-6
+#
+# Taken from astropy's CODATA constant rather than written out as a literal, so
+# that every G in this project is the same number.  It used to be the rounded
+# 4.30091e-6, which differs from CODATA by 1.7e-6 relative -- nothing on its own,
+# but ``generate_ics_for_spinning_clusters`` builds Phi_GC with astropy's G and
+# adds it to a Phi_host and an A built with this one, and a single Phi_eff
+# should not be assembled from two different gravitational constants.  With them
+# unified, that module's round-trip check against the helpers here comes back at
+# machine zero instead of 5e-4 (km/s)^2.
+#
+# astropy is imported here for this constant alone; the module is otherwise
+# float-only and does not need units at runtime.
+NEWTON_G = float(
+    _G_astropy.to_value(u.kpc * (u.km / u.s)**2 / u.Msun))
 
 # The host is the spherical part of gala's MilkyWayPotential2022 -- NFW halo,
 # Hernquist bulge, Hernquist nucleus -- mirroring
@@ -236,8 +298,9 @@ NEWTON_G = 4.30091e-6
 # 1.7.1's; ``host_potential`` reads the same numbers off the gala object, so
 # compare against it if gala is ever updated.  The check is cheap: nu computed
 # here from the mass profile and host_potential.nu computed by gala from the
-# Hessian agree to 1e-14 over 0.2-100 kpc, and the two Omega^2 to 2e-6 (the
-# residual is the differing G).
+# Hessian agree to 1e-14 over 0.2-100 kpc, and the two Omega agree to 1e-15 --
+# they used to differ by 2e-6, which was this module's rounded G against
+# astropy's, and is gone now that NEWTON_G is taken from astropy.
 #
 # NFW: ``NFW_M`` is the characteristic mass M_s = 4 pi rho_s r_s^3, gala's ``m``
 # parameter, so that
@@ -353,6 +416,74 @@ def epicyclic_frequency(r):
     return np.sqrt((1.0 + logarithmic_mass_slope(r)) * omega_sq)
 
 
+def barycentre_fraction(m_cluster, m_host_total=None):
+    """mu = m/(M_tot + m), the fraction of the separation the host sits off-axis.
+
+    ``m_host_total`` is the host mass that carries the system's *inertia*, which
+    for an extended host is not the M(<R) that sets the orbital frequency --
+    that distinction is the theme of this module.  ``None`` means infinite, i.e.
+    the host is pinned to the rotation axis and mu = 0.
+
+    Which to pass is a physical question with an O(1) consequence, not a
+    refinement.  The host's displacement produces a tangential force
+    G M_tot (mu d)/d^3 = G m/d^2 for M_tot >> m -- **independent of M_tot**, and
+    exactly the order of the cluster's own tangential pull.  So fixing the host
+    is not a small approximation off the host-cluster axis: it removes one of
+    the two competing terms entirely, and with it the triangular points.
+
+      * Point-mass host (``KeplerHost``, nu = 3): it recoils, because a point
+        mass has nowhere else to put the momentum.  Pass ``m_host_total = M``.
+        This is the textbook restricted three-body problem, L4/L5 exist at 60
+        degrees and A sits there.
+      * Extended live halo (``SphericalMW2022Host``): leave it ``None``.  Not
+        because mu is small -- the argument above shows that does not save you
+        -- but because a halo does not translate rigidly at all; it deforms and
+        exerts dynamical friction.  And even granting rigid recoil, the
+        triangular points need (M_tot + m)/M(<R) <= 8 to exist
+        (:func:`triangular_point_angle`), which for this host means R > 16 kpc.
+        Below that they are absent either way and A sits at L3.
+
+    Getting this wrong moves E_crit by about 1%: for a 2e5 Msun cluster at
+    5 kpc around a point-mass host, the barycentric E_crit is -18.346 (km/s)^2
+    against -18.518 fixed, a 0.94% error that lives entirely in A -- L1 comes
+    out at 69.245 pc either way.
+    """
+    if m_host_total is None or not np.isfinite(m_host_total):
+        return 0.0
+    return float(m_cluster) / (float(m_host_total) + float(m_cluster))
+
+
+def _resolve_host(phi_host, mass_host):
+    """Fill in the built-in MW2022 host for whichever callable is None.
+
+    Every function below that needs the host takes ``phi_host`` (Phi_host(r) in
+    (km/s)^2) and/or ``mass_host`` (M(<r) in Msun) and defaults to
+    :func:`galaxy_potential` / :func:`galaxy_enclosed_mass`.  Both must be
+    vectorised over a numpy array of radii in kpc.
+
+    The point of the hook is that nothing in the Lagrange-point or A machinery
+    is specific to MilkyWayPotential2022 -- it needs a spherical Phi(r) and the
+    M(<r) that goes with it, and nothing else.  Passing a different pair covers
+    any host, and with it any nu: nu = 3 - dlnM/dlnR is a property of
+    ``mass_host`` alone, so a caller wanting nu = 3 passes a point mass, nu = 1
+    a flat rotation curve, and so on.  ``host_potential.py``'s gala hosts are
+    wrapped this way by the IC generator, which is what makes ``--host kepler``
+    come out Keplerian here instead of silently Milky Way.
+
+    Pass the two together or not at all: a Phi and an M(<r) that are not each
+    other's derivative-integral pair describe no potential, and the collinear
+    solves would balance forces from one against a potential from the other.
+    """
+    if (phi_host is None) != (mass_host is None):
+        raise ValueError(
+            "pass phi_host and mass_host together or neither: Phi_host(r) and "
+            "M_host(<r) must describe the same potential, since the Lagrange "
+            "solves use the mass and the energies use the potential.")
+    if phi_host is None:
+        return galaxy_potential, galaxy_enclosed_mass
+    return phi_host, mass_host
+
+
 def jacobi_radius(r_gal, m_cluster):
     """Leading-order Jacobi radius r_J [kpc] for a circular orbit at ``r_gal``.
 
@@ -433,7 +564,12 @@ def _collinear_root(force_balance, r_gc_mag, guess):
     return float(brentq(force_balance, lo, hi, xtol=1e-14, rtol=1e-14))
 
 
-def l1_distance(r_gc_mag, m_cluster, omega_mag):
+def l1_distance(r_gc_mag,
+                m_cluster,
+                omega_mag,
+                phi_host=None,
+                mass_host=None,
+                m_host_total=None):
     """Distance from the cluster centre to L1 (the inner saddle), in kpc.
 
     L1 sits on the host-cluster line where the net radial force in the rotating
@@ -460,14 +596,25 @@ def l1_distance(r_gc_mag, m_cluster, omega_mag):
     if not (r_gc_mag > 0.0 and m_cluster > 0.0 and omega_mag > 0.0):
         raise ValueError("r_gc_mag, m_cluster and omega_mag must be positive")
 
-    def force_balance(ell):
-        s = r_gc_mag - ell
-        return (NEWTON_G * float(galaxy_enclosed_mass(s)) / s**2
-                - NEWTON_G * m_cluster / ell**2
-                - omega_mag**2 * s)
+    _, mass_host = _resolve_host(phi_host, mass_host)
+    mu = barycentre_fraction(m_cluster, m_host_total)
 
+    def force_balance(ell):
+        # s is the host-to-point distance, which is separation minus
+        # cluster-to-point whatever the origin.  Only the centrifugal arm knows
+        # about the barycentre: it is measured from the rotation axis, which
+        # sits mu * r_gc_mag on the far side of the host.
+        s = r_gc_mag - ell
+        x_from_axis = (1.0 - mu) * r_gc_mag - ell
+        return (NEWTON_G * float(mass_host(s)) / s**2
+                - NEWTON_G * m_cluster / ell**2
+                - omega_mag**2 * x_from_axis)
+
+    # Seeded with a Jacobi-radius-sized guess; _collinear_root brackets outward
+    # from it, so a seed that is wrong for an exotic host costs iterations and
+    # not correctness.
     return _collinear_root(force_balance, r_gc_mag,
-                           jacobi_radius(r_gc_mag, m_cluster))
+                           0.1 * r_gc_mag)
 
 
 def l2_distance(r_gc_mag, m_cluster, omega_mag):
@@ -499,7 +646,7 @@ def l2_distance(r_gc_mag, m_cluster, omega_mag):
                            jacobi_radius(r_gc_mag, m_cluster))
 
 
-def l3_radius(r_gc_mag, m_cluster, omega_mag):
+def l3_radius(r_gc_mag, m_cluster, omega_mag, phi_host=None, mass_host=None):
     """Host-centred radius of L3 [kpc], on the far side of the host.
 
     Solves Omega^2 r = Phi_h'(r) + G m/(R + r)^2, which to leading order in m
@@ -508,19 +655,32 @@ def l3_radius(r_gc_mag, m_cluster, omega_mag):
     Verified against that expansion: the solved and expanded radii agree to 10
     significant figures at R = 3, 5 and 10 kpc.
 
-    Caveat, and it is the reason this is not used anywhere: L3 sits at
-    essentially the same radius as the cluster, so the answer is sensitive to
-    convention -- specifically to whether the host is allowed to recoil, which
-    :func:`l1_distance` and this function both decline to let it do.  The
-    coefficient shifts with that choice.  L1/L2 are insensitive to it because
-    they are displaced from the cluster by r_J, not by O(m/M) R.
+    L3 is where the reference level A lives.  With the host on the rotation
+    axis every stationary point of Phi_eff on the z' = 0 plane is collinear (see
+    the module docstring), and L3 is the highest of the three, so
+    A = max[Phi_eff(z' = 0)] = Phi_eff(L3).  This function is therefore the
+    independent check on :func:`plane_potential_maximum`: a 1-D root solve
+    against a 2-D grid search, agreeing to ~1e-10 (km/s)^2 over R = 1-20 kpc and
+    m = 2e5-2e10 Msun.  The brute force stays the definition -- it assumes
+    nothing about where the maximum is -- and this stays the check.
+
+    Caveat, unchanged by that promotion: L3 sits at essentially the same radius
+    as the cluster, so its position is sensitive to convention -- specifically
+    to whether the host is allowed to recoil, which :func:`l1_distance` and this
+    function both decline to let it do.  The coefficient shifts with that
+    choice.  L1/L2 are insensitive because they are displaced from the cluster
+    by r_J, not by O(m/M) R.  A inherits that sensitivity, but only through the
+    G m/(2R) term, which is 1% of |E_crit| -- and E_crit is a *difference* of
+    Phi_eff values, so the host's own zero point cancels out of it entirely.
     """
     if not (r_gc_mag > 0.0 and m_cluster > 0.0 and omega_mag > 0.0):
         raise ValueError("r_gc_mag, m_cluster and omega_mag must be positive")
 
+    _, mass_host = _resolve_host(phi_host, mass_host)
+
     def force_balance(r):
         return (omega_mag**2 * r
-                - NEWTON_G * float(galaxy_enclosed_mass(r)) / r**2
+                - NEWTON_G * float(mass_host(r)) / r**2
                 - NEWTON_G * m_cluster / (r_gc_mag + r)**2)
 
     lo, hi = 0.5 * r_gc_mag, 2.0 * r_gc_mag
@@ -552,13 +712,20 @@ def triangular_point_angle(r_gc_mag, m_cluster, m_host_total=None):
     mass to test a specific halo: even at r_trunc = 200 kpc the condition needs
     R > 16.2 kpc, while these runs use 3-10 kpc.
 
-    Two things this function is *not*.  It is not a route to a reference energy:
-    with the host centre fixed, as everywhere else in this module, there are no
-    off-axis equilibria whatsoever, so evaluating Phi_eff at "the L4/L5 points"
-    means evaluating it at coordinates that are not stationary points of it.
-    And it is not a description of a real halo, which deforms and exerts
-    dynamical friction rather than translating rigidly -- the triangular points
-    are not sharply defined in any live galactic setting, which is why the
+    Two caveats, which together are why :func:`plane_potential_maximum` brute-
+    forces A instead of calling this.  First, the formula assumes the host
+    recoils rigidly: with the host pinned to the rotation axis, as is the
+    default there and the right choice for a live halo, there are no off-axis
+    equilibria whatsoever and "the L4/L5 points" would be coordinates that are
+    not stationary points of Phi_eff at all.  Second, even where they do exist
+    this closed form is a small-m approximation -- checked against the exact
+    equilateral geometry for a point-mass host it is right to 3e-4 degrees at
+    m/M = 1e-5 but 9 degrees out by m/M = 0.5, where the true L4 is still
+    exactly equilateral with the two masses.
+
+    Nor is rigid recoil a description of a real halo, which deforms and exerts
+    dynamical friction rather than translating -- the triangular points are not
+    sharply defined in any live galactic setting, which is why the
     tidal-stripping literature uses the L1/L2 result exclusively.
     """
     if m_host_total is None:
@@ -570,7 +737,13 @@ def triangular_point_angle(r_gc_mag, m_cluster, m_host_total=None):
     return 2.0 * float(np.arcsin(0.5 * ratio**(1.0 / 3.0)))
 
 
-def l1_effective_potential(r_gc_mag, m_cluster, omega_mag, ell=None):
+def l1_effective_potential(r_gc_mag,
+                           m_cluster,
+                           omega_mag,
+                           ell=None,
+                           phi_host=None,
+                           mass_host=None,
+                           m_host_total=None):
     """(Phi_eff(L1) in (km/s)^2, distance from the cluster to L1 in kpc).
 
     The cluster is treated as a point mass here: L1 lies at roughly the tidal
@@ -582,124 +755,286 @@ def l1_effective_potential(r_gc_mag, m_cluster, omega_mag, ell=None):
     host and centrifugal terms, while ``ell`` is the unprimed |r_1| and carries
     the cluster term.
     """
+    phi_host, mass_host = _resolve_host(phi_host, mass_host)
+    mu = barycentre_fraction(m_cluster, m_host_total)
     if ell is None:
-        ell = l1_distance(r_gc_mag, m_cluster, omega_mag)
+        ell = l1_distance(r_gc_mag,
+                          m_cluster,
+                          omega_mag,
+                          phi_host=phi_host,
+                          mass_host=mass_host,
+                          m_host_total=m_host_total)
     s = r_gc_mag - ell
-    phi = (float(galaxy_potential(s)) - NEWTON_G * m_cluster / ell
-           - 0.5 * omega_mag**2 * s**2)
+    x_from_axis = (1.0 - mu) * r_gc_mag - ell
+    phi = (float(phi_host(s)) - NEWTON_G * m_cluster / ell
+           - 0.5 * omega_mag**2 * x_from_axis**2)
     return phi, ell
 
 
-def corotation_potential(r_gc_mag, omega_mag):
+def corotation_potential(r_gc_mag,
+                         omega_mag,
+                         phi_host=None,
+                         mass_host=None,
+                         m_cluster=0.0,
+                         m_host_total=None):
     """U(R) = Phi_h(R) - (1/2) Omega^2 R^2 in (km/s)^2 -- the corotation level.
 
     Phi_eff evaluated at |r'| = R with the cluster's own term left out: the
     host-plus-centrifugal effective potential on the cluster's own
     guiding-centre circle.  Dropping the cluster term is what makes it a
-    function of the primed radius alone, hence constant around the circle.  This is the
-    replacement for the old L4/L5 reference ``A``, and it is the right one for
-    an extended host:
+    function of the primed radius alone, hence constant around the circle.
+
+    This is *not* the reference level: that is A = max[Phi_eff(z' = 0)], which
+    :func:`plane_potential_maximum` brute-forces.  U(R) is the analytic anchor
+    that makes A interpretable, and the two are related exactly by the cluster's
+    own potential at the maximum,
+
+        A = Phi_eff(L3) = U(R) - G m/(2R),
+
+    L3 lying a distance 2R from the cluster.  The equilateral assumption would
+    have put the reference a distance R away instead, giving U(R) - G m/R, so
+    the three candidate levels are ordered U(R) > A > A_equilateral and span
+    G m/R -- 1.1% of |E_crit| at 5 kpc.
+
+    Why U(R) is the right anchor to quote:
 
       * Circularity makes R a stationary point of U: U'(R) = Phi'(R) - Omega^2 R
         = 0, with U''(R) = Phi'' - Omega^2 = -nu Omega^2 < 0.  So U(R) is a
         genuine maximum -- the corotation ridge, constant around the circle.
       * It is the circle the triangular points sit on *when they exist*: the
-        notes' general-host treatment forces r = R exactly, for any spherical
-        host.  The old equilateral A got the circle right and the angle wrong,
-        and the angle enters only through the cluster's own -G m/|x - r_GC|
-        term -- precisely the piece that is undefined when the points do not
-        exist.  Dropping that term is what makes U(R) well posed.
-      * It is the common leading-order level of L3, L4 and L5, which differ
-        from it only by O(G m/R) cluster terms.  Preferable to Phi_eff(L3) as a
-        definition because L3 carries the host-recoil convention sensitivity
-        documented in :func:`l3_radius`, and U(R) carries none.
+        general-host treatment forces r = R exactly, for any spherical host.
+      * It is the common leading-order level of L3, L4 and L5, which differ from
+        it only by O(G m/R) cluster terms.  It is what survives when the angle
+        -- the piece that is undefined if the triangular points do not exist --
+        is dropped, which is what makes it well posed for any host.
 
-    Numerically, the old equilateral A was exactly U(R) - G m/R for any
-    spherical host, so switching to U(R) shifts the energy scale by the
-    fraction (2/3)(r_J/R) -- 1.4%, 1.1%, 0.8% at R = 3, 5, 10 kpc.
+    Still exported in its own right because it carries no dependence on
+    m_cluster and none on the host-recoil convention that
+    :func:`l3_radius` documents, so it is the stable thing to compare orbital
+    radii against.
     """
-    return (float(galaxy_potential(r_gc_mag))
-            - 0.5 * omega_mag**2 * r_gc_mag**2)
+    phi_host, _ = _resolve_host(phi_host, mass_host)
+    mu = barycentre_fraction(m_cluster, m_host_total)
+    return (float(phi_host(r_gc_mag))
+            - 0.5 * omega_mag**2 * ((1.0 - mu) * r_gc_mag)**2)
 
 
-def escape_energy_scale(phi_l1, r_gc_mag, omega_mag):
-    """|E_crit| = |Phi_eff(L1) - U(R)| in (km/s)^2: the escape energy unit.
+def plane_potential_maximum(r_gc_mag,
+                            m_cluster,
+                            omega_mag,
+                            phi_host=None,
+                            mass_host=None,
+                            m_host_total=None,
+                            n_radial=1200,
+                            n_azimuth=901,
+                            r_outer=4.0,
+                            max_expansions=12):
+    """``(A, r_max, phi_max)``: A = max[Phi_eff(z' = 0)], by brute force.
 
-    The depth of the L1 saddle below corotation, and the natural unit of the
-    escape problem -- the energy per unit mass a star at the corotation level
-    would have to give up to be trapped inside the L1 neck.  This is the
-    denominator E_tilde should be normalised by (:func:`tilde_energy`).
+    The reference level of Weatherford et al. (2024) Eq. (5), evaluated without
+    assuming where the maximum is.  ``A`` is in (km/s)^2; ``r_max`` is the
+    host-centred radius |r'| of the maximum in kpc and ``phi_max`` its azimuth
+    from the host-cluster axis in radians, both returned so the caller can check
+    *where* the answer came from rather than only what it was.
 
-    Where the 3/2 comes from
-    ------------------------
-    Expand Phi_eff about the cluster centre, i.e. rewrite it in the unprimed
-    coordinates of the module docstring, r' = r'_GC + r.  The constant is
-    U(R) = Phi_h(R) - (1/2)Omega^2 R^2 and the linear terms cancel because the
-    orbit is circular (Omega^2 R = Phi_h'(R)), leaving the quadrupole
+    Method: evaluate Phi_eff on a log-spaced radial by uniform azimuthal grid
+    over the half-plane (Phi_eff is symmetric in phi -> -phi), take the best
+    cell, then refine it with Nelder-Mead in Cartesian (x', y').
 
-        Phi_eff(r') - U(R)
-            = Phi_GC(r) - (1/2) nu Omega^2 x^2 + (1/2) Omega^2 z^2,
+    Why not just use the equilateral points.  Because they are not equilibria of
+    this Phi_eff -- see :func:`triangular_point_angle`, and the module docstring
+    -- so evaluating there would be reading a number off a position with no
+    dynamical meaning.  Brute force costs about a second, which is nothing next
+    to the snapshot loop that follows, and it cannot be wrong about a geometry
+    it never assumed.
 
-    with nu Omega^2 = Omega^2 - Phi_h''(R) as everywhere else here.  The y^2
-    coefficient vanishes: the host's transverse compression and the centrifugal
-    term cancel exactly along the orbit.  On the host-cluster axis (y = z = 0),
-    with the cluster a point mass that far out,
+    Any host, and hence any nu
+    --------------------------
+    ``phi_host`` and ``mass_host`` (see :func:`_resolve_host`) select the host;
+    the default is this module's MilkyWayPotential2022, where nu runs 1.6-2.1.
+    Nothing in the method is specific to it.  Verified against power-law hosts
+    M(<r) ~ r^(3-nu) over nu = 0.5 to 3 and against a point mass (nu = 3): the
+    maximum is L3 at phi = pi in every case, matching :func:`l3_radius` to ~1e-9
+    (km/s)^2 relative.
 
-        f(x) = -G m / x - (1/2) nu Omega^2 x^2.
+    The one case with no answer is nu <= 0 -- a homogeneous or hollow core, where
+    the host's attraction and the centrifugal term cancel to quadratic order and
+    Phi_eff has no interior maximum at all; its supremum is approached only as
+    the cluster's own -G m/|r| dies away at large separation.  That is the same
+    degeneracy that makes r_J diverge (:func:`jacobi_radius` returns ``inf``)
+    and removes L1.  Rather than return whatever sits on the edge of the grid,
+    the search notices that the maximum has run to the outer boundary, expands
+    the grid, and after ``max_expansions`` doublings raises.  A caller seeing
+    that error should check nu before checking this function.
 
-    Two lines finish it.  f'(x) = 0 puts the saddle at
+    Where the maximum lands, and what checks it
+    -------------------------------------------
+    ``m_host_total`` decides, via :func:`barycentre_fraction`, and the two
+    answers are genuinely different points rather than a small displacement:
 
-        x^3 = G m / (nu Omega^2) = r_J^3,
+    ``None`` (default), host pinned to the rotation axis
+        Phi_host and the centrifugal term are both axisymmetric about the
+        origin, so neither contributes azimuthally and the only azimuthal force
+        is the cluster's, vanishing at phi = 0, pi.  Every stationary point of
+        Phi_eff on the plane is collinear, for any spherical host whatsoever,
+        and the highest is L3.  Returns phi_max = pi, checkable against the
+        independent 1-D solve of :func:`l3_radius` (~1e-10 (km/s)^2 over
+        R = 1-20 kpc, m = 2e5-2e10 Msun, and nu = 0.5-3).
+    ``m_host_total`` given, host recoiling about the barycentre
+        The textbook restricted three-body problem.  The host now does exert an
+        azimuthal force, of the same order as the cluster's, and the triangular
+        points exist: returns the **exact equilateral L4**, verified to ~1e-6
+        degrees in angle and nine significant figures in radius against the
+        equilateral construction, for m/M from 1e-5 to 0.5.  For small m/M that
+        is phi_max -> 60 degrees.
 
-    which is the Jacobi radius, and substituting back,
+    So a phi_max of pi with a finite ``m_host_total``, or of 60 degrees with
+    ``None``, means the geometry and the recoil argument have come apart and
+    something upstream is inconsistent.
 
-        f(r_J) = -G m/r_J - (1/2)(G m/r_J^3) r_J^2 = -(3/2) G m / r_J.
-
-    So the 3/2 is 1 from the cluster's own potential at the saddle plus 1/2 from
-    the tide, and nu cancels between them: it fixes *where* the saddle sits but
-    not how deep it is.  That is the whole reason the 3/2 is universal over
-    spherical hosts rather than Keplerian, and why the host enters this scale
-    only through r_J.
-
-    The same algebra with nu -> nu + zeta covers a cluster spinning
-    asynchronously at omega^2 = (1 + zeta)Omega^2, whose axial coefficient is
-    -(nu + zeta)x^2 (see
-    ``generate_ics_for_spinning_clusters.assert_l1_saddle_exists``): its saddle
-    moves to r_J(nu + zeta) and is again 3/2 G m deep over it.  Neither the host
-    profile nor the spin touches the 3/2.
-
-    Accuracy.  What this function returns is the *exact* Phi_eff(L1) - U(R) built
-    from the solved saddle, not the expansion above; the expansion is the
-    argument, not the implementation.  For m = 2e5 Msun the two agree to 0.22%,
-    0.13%, 0.09% and 0.08% at R = 3, 5, 8 and 10 kpc, the residual being the
-    O(r_J/R) the expansion drops.  ``python -m jacobi_escape`` prints that
-    comparison as its second table, alongside r_J/R for the residual to track.
-
-    Relation to the Giersz threshold
-    --------------------------------
-    The cluster-only scripts strip a star when its cluster-frame energy clears
-    alpha Phi_GC(r_t) = -alpha G m / r_t, with
-
-        alpha = 1.5 - (ln Lambda / N)^(1/4)    (Giersz, Heggie & Hurley 2008)
-
-    That is the same quantity as the scale here, not a rival convention: take
-    alpha to its N -> infinity limit of 3/2 and r_t to the force-balance r_J,
-    and -alpha G m/r_t is exactly E_crit = -(3/2) G m / r_J.  Giersz's alpha *is*
-    the L1 saddle depth, less an empirical N-dependent correction for the fact
-    that a star at the threshold needs a finite time to find the neck.  At the
-    resolutions in play the correction is a few per cent: alpha = 1.4396 at
-    N = 1e6 and 1.3976 at N = 1e5, for gamma = 0.6.
-
-    This module keeps the bare 3/2 and does not offer alpha as an option.  Alpha
-    is a rate correction in the shape of an energy -- it depends on N and on the
-    Coulomb-log fudge gamma -- so normalising by it would make a figure's energy
-    axis depend on the particle count of the run rather than on its dynamics,
-    and would place the same star at two different E_tilde in two resolutions of
-    the same cluster.  The 3/2 depends on nothing.  Where the Giersz criterion
-    is named elsewhere in this project it is those scripts' criterion being
-    described; it is never a normalisation used here.
+    :func:`triangular_point_angle` gives a closed form for the second case, but
+    it agrees with this search only for small m/M -- by m/M ~ 0.5 it is 9
+    degrees out.  The search does not use it, which is the point of brute
+    force.
     """
-    return abs(float(phi_l1) - corotation_potential(r_gc_mag, omega_mag))
+    if not (r_gc_mag > 0.0 and m_cluster > 0.0 and omega_mag > 0.0):
+        raise ValueError("r_gc_mag, m_cluster and omega_mag must be positive")
+    phi_host, mass_host = _resolve_host(phi_host, mass_host)
+
+    # Origin on the rotation axis.  With m_host_total given that is the
+    # barycentre and the host sits mu * r_gc_mag behind it; with it None the
+    # host is the origin, mu = 0, and this reduces to the pinned-host case.
+    # Which is right is a physical choice with an O(1) effect off-axis -- see
+    # :func:`barycentre_fraction`.
+    mu = barycentre_fraction(m_cluster, m_host_total)
+    x_host = -mu * r_gc_mag
+    x_cluster = (1.0 - mu) * r_gc_mag
+
+    def phi_eff(x, y):
+        to_host = np.maximum(np.hypot(x - x_host, y), 1e-12)
+        to_cluster = np.maximum(np.hypot(x - x_cluster, y), 1e-12)
+        return (phi_host(to_host) - NEWTON_G * m_cluster / to_cluster
+                - 0.5 * omega_mag**2 * (x**2 + y**2))
+
+    azimuths = np.linspace(0.0, np.pi, int(n_azimuth))
+    r_hi = float(r_outer) * r_gc_mag
+    for _ in range(int(max_expansions) + 1):
+        radii = np.geomspace(0.02 * r_gc_mag, r_hi, int(n_radial))
+        r_grid, phi_grid = np.meshgrid(radii, azimuths, indexing="ij")
+        values = phi_eff(r_grid * np.cos(phi_grid), r_grid * np.sin(phi_grid))
+        best = np.unravel_index(np.nanargmax(values), values.shape)
+        # Running to the outer edge means there is no interior maximum inside
+        # this grid: either the grid is too small or nu <= 0 and there is none
+        # at any size.  Either way the fix is to look further out first.
+        if best[0] < len(radii) - 1:
+            break
+        r_hi *= 2.0
+    else:
+        raise RuntimeError(
+            f"max[Phi_eff(z' = 0)] ran to the outer edge of the search grid "
+            f"out to {r_hi:g} kpc for a cluster of {m_cluster:g} Msun at "
+            f"{r_gc_mag:g} kpc.  Phi_eff has no interior maximum on the plane, "
+            f"which is the nu <= 0 case: inside a homogeneous core the host's "
+            f"attraction and the centrifugal term cancel to quadratic order, "
+            f"there is no L1 either (jacobi_radius returns inf), and the "
+            f"satellite is tidally protected rather than stripped.  Check nu "
+            f"at this radius before looking any further at this function.")
+
+    result = minimize(lambda q: -float(phi_eff(q[0], q[1])),
+                      [float(r_grid[best] * np.cos(phi_grid[best])),
+                       float(r_grid[best] * np.sin(phi_grid[best]))],
+                      method="Nelder-Mead",
+                      options={
+                          "xatol": 1e-12,
+                          "fatol": 1e-14,
+                          "maxiter": 20000
+                      })
+    x, y = float(result.x[0]), float(result.x[1])
+    return -float(result.fun), float(np.hypot(x, y)), float(np.arctan2(y, x))
+
+
+def critical_energy(r_gc_mag,
+                    m_cluster,
+                    omega_mag,
+                    ell=None,
+                    phi_host=None,
+                    mass_host=None,
+                    m_host_total=None):
+    """``(E_crit, A, phi_l1, ell_l1)`` for one cluster configuration.
+
+    Weatherford et al. (2024) Eq. (4), E_crit = Phi_eff(r'_L1) - A, together
+    with the pieces it is built from so a caller can reference E_J to the same
+    A (Eq. 2) without recomputing anything:
+
+        ``E_crit``   the critical energy, negative, in (km/s)^2.
+        ``A``        max[Phi_eff(z' = 0)] from :func:`plane_potential_maximum`.
+        ``phi_l1``   Phi_eff at the L1 saddle, in (km/s)^2.
+        ``ell_l1``   cluster-to-L1 distance in kpc.
+
+    ``ell`` is passed through to :func:`l1_effective_potential`; see
+    :func:`escape_reference` for what supplying it changes and why it is not a
+    free choice.
+
+    E_crit < 0 always, since L1 is a saddle below the plane's maximum.  A
+    non-negative return would mean the L1 solve and the plane search have found
+    inconsistent configurations and is worth treating as an error upstream
+    rather than propagating into a division.
+    """
+    phi_host, mass_host = _resolve_host(phi_host, mass_host)
+    phi_l1, ell_l1 = l1_effective_potential(r_gc_mag,
+                                            m_cluster,
+                                            omega_mag,
+                                            ell=ell,
+                                            phi_host=phi_host,
+                                            mass_host=mass_host,
+                                            m_host_total=m_host_total)
+    a_ref, _, _ = plane_potential_maximum(r_gc_mag,
+                                          m_cluster,
+                                          omega_mag,
+                                          phi_host=phi_host,
+                                          mass_host=mass_host,
+                                          m_host_total=m_host_total)
+    return phi_l1 - a_ref, a_ref, phi_l1, ell_l1
+
+
+def escape_energy_scale(phi_l1,
+                        r_gc_mag,
+                        m_cluster,
+                        omega_mag,
+                        phi_host=None,
+                        mass_host=None):
+    """|E_crit| = |Phi_eff(L1) - A| in (km/s)^2: the escape energy unit.
+
+    The depth of the L1 saddle below the maximum of Phi_eff on the orbital
+    plane, and the denominator of Weatherford et al. (2024) Eq. (3) -- the
+    energy per unit mass a star sitting at the A level would have to give up to
+    be trapped inside the L1 neck.
+
+    Both terms are solved for, neither is expanded: Phi_eff(L1) comes from the
+    exact radial force balance of :func:`l1_distance` against the true M(<r')
+    profile, and A from the brute-forced plane search of
+    :func:`plane_potential_maximum`.  That is the whole definition, and it is
+    the only energy scale this module offers -- there is deliberately no
+    leading-order stand-in to normalise by instead, because every such stand-in
+    (a leading-order saddle depth, an empirically calibrated boundary constant,
+    and so on) is a different number that merely happens to be close, and a
+    figure whose axis is one of them is not a figure of E_tilde.
+
+    For orientation only, never for use: the scale is of order G m/r_J, a few
+    tens of (km/s)^2 for a 2e5 Msun cluster in the inner Galaxy.  A computed
+    |E_crit| orders away from that means the inputs are wrong, not the
+    definition.
+
+    :func:`critical_energy` returns the signed E_crit together with the A and
+    Phi_eff(L1) it was built from, which is what a caller referencing E_J to the
+    same A needs; this function is the convenience wrapper for the magnitude.
+    """
+    a_ref, _, _ = plane_potential_maximum(r_gc_mag,
+                                          m_cluster,
+                                          omega_mag,
+                                          phi_host=phi_host,
+                                          mass_host=mass_host)
+    return abs(float(phi_l1) - a_ref)
 
 
 def load_tidal_radius(radii_info_csv):
@@ -854,14 +1189,26 @@ def rotating_frame_velocity(vel_inertial, pos_host, omega_vec):
             - np.cross(omega_vec, np.asarray(pos_host, dtype=float)))
 
 
-def jacobi_energy(pos_host, vel_inertial, phi_cluster, omega_vec, phi_l1):
-    """E_J = (1/2)|v_rot|^2 + Phi_eff(r') - Phi_eff(r'_1), in (km/s)^2.
+def jacobi_energy(pos_host, vel_inertial, phi_cluster, omega_vec, phi_ref):
+    """E_J = (1/2)|v_rot|^2 + Phi_eff(r') - phi_ref, in (km/s)^2.
 
-    ``phi_l1`` is the L1 effective potential from :func:`escape_reference`.
-    Subtracting it is part of the definition, not a normalisation applied
-    afterwards: it puts the escape threshold at E_J = 0, so the sign of the
-    return value *is* the escape criterion, and the magnitude of a negative one
-    is the energy per unit mass the star still needs to get out through L1.
+    ``phi_ref`` is the level E_J is measured from, and there are exactly two
+    sensible choices.  They differ by E_crit and are trivially interconvertible,
+    but they are not interchangeable and mixing them costs exactly the width of
+    the conventional E_tilde >= 1 cut:
+
+    ``A`` from :func:`plane_potential_maximum` or :func:`critical_energy`
+        Weatherford et al. (2024) Eq. (2).  Pair with :func:`tilde_energy`.  The
+        escape threshold sits at E_J = E_crit, not at zero.
+    ``phi_l1`` from :func:`escape_reference`
+        The L1-referenced form.  Pair with :func:`tilde_energy_from_l1`.  Puts
+        the threshold at E_J = 0, so the sign of the return value *is* the
+        escape criterion and the magnitude of a negative one is the energy per
+        unit mass the star still needs to get out through L1.
+
+    Either way the subtraction is part of the definition rather than a
+    normalisation applied afterwards, and either way it cancels the ~1.4e5
+    (km/s)^2 of host potential that would otherwise swamp the double precision.
 
     ``vel_inertial`` is the velocity in the fixed frame; it is converted to the
     rotating frame here, so callers pass the raw snapshot velocities.
@@ -869,26 +1216,27 @@ def jacobi_energy(pos_host, vel_inertial, phi_cluster, omega_vec, phi_l1):
     v_rot = rotating_frame_velocity(vel_inertial, pos_host, omega_vec)
     kinetic = 0.5 * np.sum(v_rot**2, axis=-1)
     return (kinetic + effective_potential(pos_host, phi_cluster, omega_vec)
-            - phi_l1)
+            - phi_ref)
 
 
 def tilde_energy(e_jacobi_a, e_crit):
-    """E_tilde = (E_J - E_crit)/|E_crit|, the paper's Eq. (3).
+    """E_tilde = (E_J - E_crit)/|E_crit|, Weatherford et al. (2024) Eq. (3).
 
-    ``e_jacobi_a`` must be the **A-referenced** Jacobi energy,
-    (1/2)|v_rot|^2 + Phi_eff(r') - U(R).  ``e_crit`` is Phi_eff(L1) - U(R),
-    negative.
+    ``e_jacobi_a`` must be the **A-referenced** Jacobi energy of Eq. (2),
+    (1/2)|v_rot|^2 + Phi_eff(r') - A, i.e. :func:`jacobi_energy` called with the
+    A from :func:`critical_energy` or :func:`plane_potential_maximum`.
+    ``e_crit`` is Phi_eff(L1) - A, negative.
 
-    Passing the L1-referenced E_J that :func:`jacobi_energy` returns instead
-    yields E_tilde - 1: the two zero points differ by exactly E_crit.  That is
-    the worst possible size of error -- exactly the width of the conventional
-    E_tilde >= 1 cut -- and it will not look obviously wrong.  Use
-    :func:`tilde_energy_from_l1` for that input.
+    Passing the L1-referenced E_J instead yields E_tilde - 1: the two zero
+    points differ by exactly E_crit.  That is the worst possible size of error
+    -- exactly the width of the conventional E_tilde >= 1 cut -- and it will not
+    look obviously wrong.  Use :func:`tilde_energy_from_l1` for that input.
 
     Anchors:
         E_tilde = 0   C = Phi_eff(L1): the star can reach L1 and leave.
-        E_tilde = 1   C = U(R): it can reach the corotation circle and is no
-                      longer confined to the neighbourhood of the orbit.
+        E_tilde = 1   C = A: it can reach the maximum of Phi_eff on the orbital
+                      plane, and is no longer confined to the neighbourhood of
+                      the orbit at all.
     """
     return (np.asarray(e_jacobi_a, dtype=float) - e_crit) / abs(e_crit)
 
@@ -900,35 +1248,24 @@ def tilde_energy_from_l1(e_jacobi_l1, e_crit):
 
         E_tilde = E_J^L1 / |E_crit|,
 
-    which is why the zero point is unaffected by the choice of A and only the
-    unit of the axis depends on it.  Verified equal to :func:`tilde_energy` to
+    which is why the zero point is unaffected by the choice of A -- only the
+    unit of the axis depends on it, through |E_crit|.  Brute-forcing A rather
+    than assuming equilateral L4/L5 therefore rescales E_tilde by ~1% and moves
+    no threshold.  Verified equal to :func:`tilde_energy` to
     machine zero.  ``e_crit`` may be passed as the signed value or as the
     positive scale from :func:`escape_energy_scale`; only its magnitude is used.
     """
     return np.asarray(e_jacobi_l1, dtype=float) / abs(e_crit)
 
 
-def circular_frequency(r_gal):
+def circular_frequency(r_gal, phi_host=None, mass_host=None):
     """Omega for a circular orbit at ``r_gal`` kpc, in (km/s)/kpc.
 
     Used by the IC script, where the cluster is placed on a circular orbit
     rather than read from a run's SCF frame.
     """
-    return np.sqrt(NEWTON_G * galaxy_enclosed_mass(r_gal) / r_gal**3)
-
-
-def giersz_alpha(n_star=1_000_000, gamma=0.6):
-    """alpha = 1.5 - (ln(gamma N)/N)^(1/4), Giersz, Heggie & Hurley (2008).
-
-    Provided for the comparison :func:`escape_energy_scale` documents and
-    ``_report`` prints, and for nothing else: **no escape criterion in this
-    module uses it.**  It is the cluster-only scripts' threshold constant, an
-    N- and gamma-dependent correction to the same 3/2 that
-    :func:`escape_energy_scale` derives from the L1 saddle, and normalising by
-    it would tie an energy axis to a run's particle count.  See that function's
-    "Relation to the Giersz threshold".
-    """
-    return 1.5 - (np.log(gamma * n_star) / n_star)**0.25
+    _, mass_host = _resolve_host(phi_host, mass_host)
+    return np.sqrt(NEWTON_G * mass_host(r_gal) / r_gal**3)
 
 
 def _report(m_cluster=2.0e5, radii=(1.0, 3.0, 5.0, 8.0, 10.0, 20.0)):
@@ -964,28 +1301,48 @@ def _report(m_cluster=2.0e5, radii=(1.0, 3.0, 5.0, 8.0, 10.0, 20.0)):
     print("The L4/L5 column is 'none' wherever (M_tot + m)/M(<R) > 8; with the "
           "halo\nuntruncated M_tot diverges and they never exist.")
 
-    # The energy scale, and the 3/2 that escape_energy_scale derives: the last
-    # column is the only claim in that docstring not already a column above.
-    header = ("  R    |E_crit|   (3/2)Gm/r_J   ratio    r_J/R    "
-              "Giersz -alpha Gm/r_J")
+    # Where the brute-forced A actually lands, and how it compares with the two
+    # analytic levels.  phi_max = 180 deg and A == Phi_eff(L3) are the two
+    # claims the module docstring makes about plane_potential_maximum.
+    header = ("  R    A - U(R)   -Gm/(2R)   A - Phi(L3)   phi_max   "
+              "r_max/R   equilateral")
     print("\n" + header)
-    print(f"{'kpc':>4}  {'(km/s)^2':>8}   {'(km/s)^2':>8}   "
-          f"{'exact/exp':>9} {'':>8} {'N = 1e6, gam = 0.6':>18}")
+    print(f"{'kpc':>4}  {'(km/s)^2':>8} {'(km/s)^2':>10} {'(km/s)^2':>13} "
+          f"{'deg':>9} {'':>9} {'A_eq - U(R)':>13}")
     print("-" * len(header))
     for r in radii:
         omega = float(circular_frequency(r))
-        r_j = jacobi_radius(r, m_cluster)
-        phi_l1, _ = l1_effective_potential(r, m_cluster, omega)
-        exact = escape_energy_scale(phi_l1, r, omega)
-        expansion = 1.5 * NEWTON_G * m_cluster / r_j
-        giersz = giersz_alpha() * NEWTON_G * m_cluster / r_j
-        print(f"{r:5.1f} {exact:9.4f} {expansion:12.4f} "
-              f"{exact / expansion:9.5f} {r_j / r:8.5f} {giersz:16.4f}")
-    print("\nThe ratio column is the O(r_J/R) the (3/2) G m / r_J expansion "
-          "drops; it\ntracks the r_J/R column, as it should.  The last column "
-          "is what normalising\nby the Giersz alpha instead of the bare 3/2 "
-          "would give -- a few per cent, and\nN-dependent, which is why "
-          "escape_energy_scale keeps the 3/2.")
+        a_ref, r_max, phi_max = plane_potential_maximum(r, m_cluster, omega)
+        u_r = corotation_potential(r, omega)
+        phi_l3 = (float(galaxy_potential(l3_radius(r, m_cluster, omega)))
+                  - NEWTON_G * m_cluster / (r + l3_radius(r, m_cluster, omega))
+                  - 0.5 * omega**2 * l3_radius(r, m_cluster, omega)**2)
+        print(f"{r:5.1f} {a_ref - u_r:9.4f} "
+              f"{-NEWTON_G * m_cluster / (2.0 * r):10.4f} "
+              f"{a_ref - phi_l3:13.2e} {np.degrees(phi_max):9.4f} "
+              f"{r_max / r:9.6f} "
+              f"{-NEWTON_G * m_cluster / r:13.4f}")
+    print("\nColumns 2 and 3 are the claim A = U(R) - Gm/(2R); column 4 is the "
+          "brute-forced\nmaximum against the independent l3_radius solve.  "
+          "phi_max = 180 deg says every\nstationary point of Phi_eff on the "
+          "plane is collinear, as it must be with the\nhost on the rotation "
+          "axis.  The last column is what assuming equilateral L4/L5\nwould "
+          "have given instead -- twice as far below U(R), because L3 is 2R from "
+          "the\ncluster and the equilateral points would be R.")
+
+    header = "  R    Phi_eff(L1)         A          E_crit      r_J/R"
+    print("\n" + header)
+    print(f"{'kpc':>4}  {'(km/s)^2':>12} {'(km/s)^2':>12} {'(km/s)^2':>11}")
+    print("-" * len(header))
+    for r in radii:
+        omega = float(circular_frequency(r))
+        e_crit, a_ref, phi_l1, _ = critical_energy(r, m_cluster, omega)
+        print(f"{r:5.1f} {phi_l1:14.4f} {a_ref:13.4f} {e_crit:11.4f} "
+              f"{jacobi_radius(r, m_cluster) / r:10.5f}")
+    print("\nE_crit = Phi_eff(L1) - A is the only energy scale this module "
+          "defines, and\nboth terms in it are solved for rather than "
+          "approximated.  It is the unit of\nE_tilde and the denominator of "
+          "Weatherford et al. (2024) Eq. (3).")
 
 
 if __name__ == "__main__":
