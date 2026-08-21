@@ -4,8 +4,8 @@
 A TIRO model is bound when every star it contains sits inside a closed
 zero-velocity surface.  The most energetic bound orbit is a star at rest (in the
 co-rotating frame) on the cluster's own boundary, and the surface first opens at
-the L1 saddle on the +x axis, toward the galactic centre.  So the model is
-critically filling when that star's Jacobi energy is exactly zero,
+a collinear saddle on the host-cluster axis.  So the model is critically filling
+when that star's Jacobi energy is exactly zero,
 
     E_J = Phi_eff(boundary) - Phi_eff(L1) = 0,
 
@@ -28,6 +28,17 @@ and on the boundary psi = 0, so the whole criterion collapses to
 with r_L1 the root of the external solution's radial gradient along +x.  One
 Model integration and one 1-D root solve per trial zeta; psi(r_L1) is monotone
 increasing in zeta, so the outer solve is a bracketed brentq that cannot wander.
+
+A note on the axis, since the sign convention differs between this module and
+``jacobi_escape``.  These are unprimed (cluster-centred) coordinates -- the
+KRIOS convention is primed for the host, unprimed for the cluster, so with the
+host at r' = 0 and the cluster at r'_GC = (R, 0, 0) the +x here points *away*
+from the galactic centre.  It makes no difference: TIRO's perturbation is even
+in x, so the inner and outer saddles are exactly degenerate at quadrupole order
+and "L1" names either of them.  ``jacobi_escape`` solves the same balance
+against the full M(<r') profile, keeps the terms this expansion drops, and finds
+the two split by O(r_J/R) -- 0.4% of r_J at 5 kpc, with L1 the lower.  That is
+the number to quote when the distinction matters; here it cannot.
 
 This replaces a 2-D fsolve for the point where the external solution and its
 gradient vanish together (the "critical curve" eps_crit(zeta), inverted for
