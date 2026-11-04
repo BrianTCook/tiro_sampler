@@ -54,6 +54,27 @@ search to find.  A satellite there is tidally protected rather than stripped,
 so it is refused up front rather than left to fail inside brentq; see
 :func:`assert_tidal_field_shears`.
 
+M_GC sets the physical scale
+----------------------------
+The cluster mass --M_GC and the central density --rho_0 together fix the King
+radius through r_0^3 = M_GC/(rho_norm M_hat), where M_hat is the model's
+integrated dimensionless mass.  epsilon = Omega^2/(4 pi G rho_0) does not
+contain M_GC, so at fixed rho_0 the mass never reaches the dimensionless model:
+(psi, epsilon, zeta, nu), zeta_crit and everything in Henon units are unchanged,
+and the mass acts as a pure similarity rescaling of the physical scales, with
+r_0 and r_hm going as M_GC^(1/3) and sigma likewise.  The Jacobi radius
+r_J = (G M_GC/(nu Omega^2))^(1/3) scales the same way, so the tidal filling
+factor r_hm/r_J is mass-invariant too -- raising the mass at fixed rho_0 does
+not make a model any easier or harder to strip.
+
+Where the mass does bite is the escape diagnostics and the clock.  E_crit, the
+L1 potential and the barycentre fraction mu = M_GC/(M_GC + M_host) all come out
+of the cluster-host three-body problem, which knows the mass ratio, so the E_J
+and E_tilde columns of particle_energies.csv genuinely differ at a different
+M_GC; and t_rh ~ sqrt(r_hm^3/(G M_GC)), which collate_ics_table reports, goes as
+M_GC^0 only because r_hm carries the mass -- at fixed rho_0 it is independent of
+M_GC, but at fixed r_hm it is not.
+
 Outputs, per realisation
 ------------------------
 ``particles.csv``          the KRIOS input.  Fixed, headerless column layout;
@@ -486,7 +507,7 @@ class TiroInitialConditionSampler:
         tag = (f"tiro_ics"
                f"_N{self.n}_psi{self.psi_central}_zeta{self.zeta:.1f}"
                f"_host{self.host_name}_nu{self.nu:.3f}"
-               f"_mgc{self.m_gc_msun:.0e}"
+               f"_mgc{self.m_gc_msun:.3g}"
                f"_rho0{self.rho_0_msun_pc3:.0e}_rgal{self.r_gal_kpc}")
         self.out_dir = Path(tag)
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -852,7 +873,7 @@ class TiroInitialConditionSampler:
         parent_tag = (f"tiro_ics"
                       f"_N{self.n}_psi{self.psi_central}_zeta{self.zeta:.1f}"
                       f"_host{self.host_name}_nu{self.nu:.3f}"
-                      f"_mgc{self.m_gc_msun:.0e}"
+                      f"_mgc{self.m_gc_msun:.3g}"
                       f"_rho0{self.rho_0_msun_pc3:.0e}_rgal{self.r_gal_kpc}")
         self.out_dir = Path(parent_tag) / f"seed{seed}"
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -1430,7 +1451,16 @@ def main():
         "3 - dlnM/dlnR sets the tidal radius, r_J^3 = R^3 "
         "M_GC/(nu M(<R)), and is 1.6-1.9 for mw2022_sph over "
         "3-20 kpc against 3 for a point mass.")
-    parser.add_argument("--M_GC", type=float, default=_DEFAULT_M_GC)
+    parser.add_argument(
+        "--M_GC",
+        type=float,
+        default=_DEFAULT_M_GC,
+        help="Total cluster mass in Msun (default "
+        f"{_DEFAULT_M_GC:g}). With --rho_0 it sets the King radius, "
+        "r_0^3 = M_GC/(rho_norm M_hat). It leaves epsilon, and so the "
+        "dimensionless model and zeta_crit, untouched, but rescales "
+        "r_hm and sigma as M_GC^(1/3) and moves the E_J/E_tilde escape "
+        "diagnostics through the cluster-host mass ratio.")
     parser.add_argument("--rho_0", type=float, default=_DEFAULT_RHO_0)
     parser.add_argument("--r_gal", type=float, default=_DEFAULT_R_GAL)
     parser.add_argument("--n_real", type=int, default=1)
