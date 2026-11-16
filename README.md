@@ -18,7 +18,7 @@ unmodified as a git submodule; everything here sits on top of it.
 | `plot_rotation_diagnostic.py` | Regenerates `rotation_diagnostic.png` from an existing `particles.csv`. |
 | `sollima_rotation_amplitude.py` | Measures the Sollima et al. (2019) rotation amplitude `A` from the particles of each IC realisation (joint fit of axis position angle, inclination and `A` to the three projected velocity components) and reports `A/sigma_0` and `A/sigma_1D`, the form in which MW GC rotation is tabulated, plus the rotational kinetic-energy fraction `xi` from their Appendix B. |
 | `get_cluster_ics.sh` | Driver for the IC runs used in the paper. |
-| `get_ngc5466_ics.sh` | Driver for the NGC 5466 stream runs: one non-spinning control and one maximally spinning model on the catalogue orbit, with every number taken from the planner in `spinning_gcs_paper/ngc5466_krios/`. |
+| `get_ngc5466_ics.sh` | Driver for the NGC 5466 stream runs: one non-spinning control and one maximally spinning model on the catalogue orbit, N = 2e5 (see `NGC5466_N2E5_ICS.md`; models at other N are deprecated), with every number taken from the planner in `spinning_gcs_paper/ngc5466_krios/`. |
 | `MW2022_DISK_IN_TIRO.md` | What it would take to build TIRO models in the full MilkyWayPotential2022, disk included, and why that is not done for the NGC 5466 runs. |
 | `tiro_path.py` | Puts the TIRO submodule on `sys.path` (TIRO is loose modules, not an installable package). |
 
@@ -61,7 +61,7 @@ approximation breaks in three places, in decreasing order of size:
    the model, and the azimuthal term of the tidal tensor is -0.87
    (in units of `Omega_c^2`) rather than TIRO's 0. The radial term grows by a
    factor of order `(r_apo/r_peri)^3` by pericentre, where the Pfeffer tidal
-   radius (44 pc) falls inside the model's truncation radius (53 pc).
+   radius (44 pc) falls inside the model's truncation radius (54 pc).
    No choice of host removes this; the model is out of equilibrium through
    every pericentre.
 2. **`nu` mismatch.** The generator accepts only a host and `r_gal`, so it
