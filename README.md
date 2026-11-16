@@ -18,7 +18,7 @@ unmodified as a git submodule; everything here sits on top of it.
 | `plot_rotation_diagnostic.py` | Regenerates `rotation_diagnostic.png` from an existing `particles.csv`. |
 | `sollima_rotation_amplitude.py` | Measures the Sollima et al. (2019) rotation amplitude `A` from the particles of each IC realisation (joint fit of axis position angle, inclination and `A` to the three projected velocity components) and reports `A/sigma_0` and `A/sigma_1D`, the form in which MW GC rotation is tabulated, plus the rotational kinetic-energy fraction `xi` from their Appendix B. |
 | `get_cluster_ics.sh` | Driver for the IC runs used in the paper. |
-| `get_ngc5466_ics.sh` | Driver for the NGC 5466 stream runs: one non-spinning control and one maximally spinning model per orbit, with every number taken from the planner in `spinning_gcs_paper/ngc5466_krios/`. |
+| `get_ngc5466_ics.sh` | Driver for the NGC 5466 stream runs: one non-spinning control and one maximally spinning model on the catalogue orbit, with every number taken from the planner in `spinning_gcs_paper/ngc5466_krios/`. |
 | `MW2022_DISK_IN_TIRO.md` | What it would take to build TIRO models in the full MilkyWayPotential2022, disk included, and why that is not done for the NGC 5466 runs. |
 | `tiro_path.py` | Puts the TIRO submodule on `sys.path` (TIRO is loose modules, not an installable package). |
 
@@ -48,37 +48,37 @@ argues that neither is warranted for the runs below.
 
 The KRIOS runs driven by `get_ngc5466_ics.sh` integrate in the **full**
 MilkyWayPotential2022 on NGC 5466's own eccentric, inclined orbit
-(`r_peri` 5-7 kpc, `r_apo` 46-55 kpc). Their initial conditions are TIRO
+(`r_peri` 6.5 kpc, `r_apo` 54.6 kpc). Their initial conditions are TIRO
 equilibria of the spherical host at a fiducial radius `r_gal` chosen so that
 the spherical host's circular frequency equals the orbit-averaged
 `<Omega_c^2>^(1/2)` over the radial period containing the t = -5 Gyr start.
-`r_gal` (19.09 and 15.32 kpc for the catalogue and stream-tuned orbits) is
+`r_gal` (19.09 kpc for the catalogue orbit) is
 therefore a proxy for a frequency, not a place the cluster ever sits. The
 approximation breaks in three places, in decreasing order of size:
 
 1. **Eccentricity.** At the start the cluster is near apocentre, where the
-   local `Omega_c` is only 0.31-0.36 of the orbit-averaged value used to build
-   the model, and the azimuthal term of the tidal tensor is -0.87 to -0.90
+   local `Omega_c` is only 0.36 of the orbit-averaged value used to build
+   the model, and the azimuthal term of the tidal tensor is -0.87
    (in units of `Omega_c^2`) rather than TIRO's 0. The radial term grows by a
    factor of order `(r_apo/r_peri)^3` by pericentre, where the Pfeffer tidal
-   radius (44-48 pc) falls inside the model's truncation radius (53-55 pc).
+   radius (44 pc) falls inside the model's truncation radius (53 pc).
    No choice of host removes this; the model is out of equilibrium through
    every pericentre.
 2. **`nu` mismatch.** The generator accepts only a host and `r_gal`, so it
    cannot match `Omega` and `nu` independently. Matching `Omega` leaves `nu`
-   at 1.83 and 1.77 against the orbit-effective `<nu Omega_c^2>/<Omega_c^2>`
-   of 2.06 and 2.01, 11-12% low. That shifts `r_J` by about 4% and
+   at 1.83 against the orbit-effective `<nu Omega_c^2>/<Omega_c^2>`
+   of 2.06, 11% low. That shifts `r_J` by about 4% and
    `zeta_crit` by more. This is the only part of the mismatch that is a
    limitation of the sampler rather than of the physics.
-3. **Disk and inclination.** At the start (37-39 kpc) the disk changes the
-   radial tidal term by 8-10% and the vertical term by under 1%, with
-   off-diagonal couplings of 1-2%; it carries a median 17% of the tensor norm
+3. **Disk and inclination.** At the start (38.7 kpc) the disk changes the
+   radial tidal term by 9% and the vertical term by under 1%, with
+   off-diagonal couplings of 1.5%; it carries a median 17% of the tensor norm
    along the orbit and up to 80% at pericentre. The disk also torques the
-   orbit, turning the angular-momentum axis by 17-28 degrees over 5 Gyr, so no
+   orbit, turning the angular-momentum axis by 17 degrees over 5 Gyr, so no
    fixed spin frame is an equilibrium frame.
 
 Evaluating the full potential at `r_gal` itself would not help: in the
-midplane at 15-19 kpc the disk gives a vertical coefficient of 3-4 instead of
+midplane at 19 kpc the disk gives a vertical coefficient of 3.3 instead of
 1, which describes a location the cluster never occupies. The practice is
 therefore: spherical host at the `Omega`-matched radius for the initial
 conditions, full MilkyWayPotential2022 in KRIOS, and the numbers above stated

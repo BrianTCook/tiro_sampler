@@ -53,25 +53,25 @@ one-parameter generalization of TIRO; the model keeps its x, y, z reflection sym
 
 For an inclined orbit the Hessian in the cluster's (r_hat, phi_hat, L_hat) frame is no longer diagonal and
 its vertical axis is not L_hat; and because the disk torques the orbit, L_hat itself turns (17 deg over the
-catalogue run, 28 deg over the tuned one), so there is no steadily rotating frame in which the model is an
-equilibrium. Measured at the two t = -5 Gyr start points (r = 37-39 kpc), `T_eff / Omega_c^2` in the
+catalogue run), so there is no steadily rotating frame in which the model is an
+equilibrium. Measured at the t = -5 Gyr start point (r = 38.7 kpc), `T_eff / Omega_c^2` in the
 (r, phi, L) frame with the instantaneous orbital Omega in the centrifugal term:
 
-| | catalogue start, full MW2022 | catalogue start, spherical part | tuned start, full MW2022 | tuned start, spherical part |
-|---|---|---|---|---|
-| T_rr | +1.329 | +1.224 | +1.282 | +1.165 |
-| T_phiphi | -0.865 | -0.845 | -0.899 | -0.885 |
-| T_LL | -0.996 | -1.000 | -0.995 | -1.000 |
-| largest off-diagonal | 0.015 | 0 | 0.017 | 0 |
-| nu = 1 - H_rr/Omega_c^2 | 2.197 | 2.069 | 2.185 | 2.051 |
+| | catalogue start, full MW2022 | catalogue start, spherical part |
+|---|---|---|
+| T_rr | +1.329 | +1.224 |
+| T_phiphi | -0.865 | -0.845 |
+| T_LL | -0.996 | -1.000 |
+| largest off-diagonal | 0.015 | 0 |
+| nu = 1 - H_rr/Omega_c^2 | 2.197 | 2.069 |
 
-Two things follow. The disk's effect at the start points is modest: 8-10% in the radial term, under 1% in
-the vertical term, off-diagonal couplings of 1-2%. The eccentricity is the larger departure from TIRO's
-form: the phi term is -0.87 to -0.90 instead of 0 because the cluster is near apocentre, where the orbital
-Omega is only 0.31-0.36 of the local circular Omega_c; and the radial term grows by a factor of order
+Two things follow. The disk's effect at the start point is modest: 9% in the radial term, under 1% in
+the vertical term, off-diagonal couplings of 1.5%. The eccentricity is the larger departure from TIRO's
+form: the phi term is -0.87 instead of 0 because the cluster is near apocentre, where the orbital
+Omega is only 0.36 of the local circular Omega_c; and the radial term grows by a factor of order
 (r_apo/r_peri)^3 ~ 500 by pericentre. Averaging the full-MW2022 tensor over the radial period containing
 -5 Gyr in the co-moving frame gives (r, phi, L) diagonals of about (+3.0, +1.0, -0.95) with r-phi
-couplings of 0.15 for both orbits, which is not a Hill tensor of any host. The disk matters most where the
+couplings of 0.15, which is not a Hill tensor of any host. The disk matters most where the
 cluster is stripped: over the catalogue orbit its share of ||T||_F has median 0.17 and reaches 0.8 at the
 8 kpc pericentre (`ngc5466_krios/outputs/ngc5466_orbit_summary.txt`).
 
@@ -129,8 +129,8 @@ What has to change beyond bookkeeping:
 - Where the tensor comes from is a modeling choice, not a code question. The planner
   (`ngc5466_krios/plan_ngc5466_ics.py`) already evaluates the full-MW2022 Hessian along the orbit. The
   instantaneous tensor at t = -5 Gyr is the only one that is a Hill tensor of anything; it comes with the
-  local Omega_c of 5.1-5.4 km/s/kpc rather than the orbit-averaged 9.4-11.5 used now, so eps falls by a
-  factor 4-5 and zeta_crit changes with it. The orbit-averaged tensor is not Hill-like (section 2b) and
+  local Omega_c of 5.1 km/s/kpc rather than the orbit-averaged 9.4 used now, so eps falls by a
+  factor 3.4 and zeta_crit changes with it. The orbit-averaged tensor is not Hill-like (section 2b) and
   should not be fed to TIRO as if it were.
 
 KRIOS needs nothing from either level. It already integrates in the full MW2022, and the Euler-angle spin
