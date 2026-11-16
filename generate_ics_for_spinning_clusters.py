@@ -92,17 +92,19 @@ carried only the --zeta half.
 """
 
 import argparse
+import os
 import warnings
 from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
 
-try:
-    matplotlib.style.use("../"
-                         "krios_python/matplotlib_style_file")
-except OSError:
-    pass
+# Optional house style: point MPLSTYLE at a matplotlib style file to use it.
+if os.environ.get("MPLSTYLE"):
+    try:
+        matplotlib.style.use(os.environ["MPLSTYLE"])
+    except OSError:
+        pass
 
 import numpy as np
 import pandas as pd

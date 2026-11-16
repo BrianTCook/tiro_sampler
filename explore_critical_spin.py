@@ -95,11 +95,12 @@ from TIRO import Model
 import matplotlib
 import matplotlib.pyplot as plt
 
-try:
-    matplotlib.style.use("../"
-                         "krios_python/matplotlib_style_file")
-except OSError:
-    pass
+# Optional house style: point MPLSTYLE at a matplotlib style file to use it.
+if os.environ.get("MPLSTYLE"):
+    try:
+        matplotlib.style.use(os.environ["MPLSTYLE"])
+    except OSError:
+        pass
 
 from critical_spin import (SearchLimitExceeded, TidallyOverfilled,
                            critical_zeta, l1_radius, tidal_strength)

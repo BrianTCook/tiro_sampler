@@ -9,6 +9,7 @@ output rotation_diagnostic.png is written next to each particles.csv.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import matplotlib
@@ -17,11 +18,12 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
 
-try:
-    matplotlib.style.use("../"
-                         "krios_python/matplotlib_style_file")
-except OSError:
-    pass
+# Optional house style: point MPLSTYLE at a matplotlib style file to use it.
+if os.environ.get("MPLSTYLE"):
+    try:
+        matplotlib.style.use(os.environ["MPLSTYLE"])
+    except OSError:
+        pass
 
 _PARTICLES_COLUMNS = [
     "id",

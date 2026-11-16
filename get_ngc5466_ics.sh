@@ -19,7 +19,7 @@
 #
 # Expected output directories (the generator names them from its arguments; the spinning one carries
 # 0.99 zeta_crit to one decimal) must match ICS_FILENAME in the inis, under
-# KRIOS data/ngc5466_tiro_ics_subdir/:
+# the KRIOS run's data/ngc5466_tiro_ics_subdir/:
 #   catalogue orbit: tiro_ics_N150000_psi3.0_zeta-1.0_hostmw2022_sph_nu1.833_mgc5.95e+04_rho08e+00_rgal19.0897
 #                    tiro_ics_N150000_psi3.0_zeta4.4_hostmw2022_sph_nu1.833_mgc5.95e+04_rho08e+00_rgal19.0897
 #   tuned orbit:     tiro_ics_N150000_psi3.0_zeta-1.0_hostmw2022_sph_nu1.766_mgc6.55e+04_rho08e+00_rgal15.3205

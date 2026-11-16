@@ -134,7 +134,11 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
-_PAPER_DIR = "../spinning_gcs_paper/"
+# Root of the companion paper repository; override with SPINNING_GCS_PAPER_DIR.
+_PAPER_DIR = os.path.join(os.environ.get(
+    "SPINNING_GCS_PAPER_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                 "spinning_gcs_paper")), "")
 DEFAULT_BASE_DIRS = (
     _PAPER_DIR + "sep1_tiro_ics_subdir/",
     _PAPER_DIR + "sep16_tiro_ics_subdir/",
