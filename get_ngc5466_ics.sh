@@ -27,7 +27,7 @@
 # Run with the krios_env python, one command at a time (the Mac tolerates ~2 workers, 1 BLAS thread):
 #   OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 bash get_ngc5466_ics.sh
 
-N=150000
+N=200000
 PSI=3
 
 # --- catalogue orbit (Vasiliev & Baumgardt 2021 coordinates; KRIOS/src/ngc5466_config_files) ---
